@@ -65,8 +65,7 @@ The bot uses Discord slash commands:
 You can also run the bot using Docker:
 
 ```bash
-# Pull the image (replace YOUR_GITHUB_USERNAME with your GitHub username)
-docker pull ghcr.io/YOUR_GITHUB_USERNAME/papercord:latest
+docker pull ghcr.io/ericbriscoe/papercord:latest
 
 # Run the container
 docker run -d \
@@ -75,7 +74,7 @@ docker run -d \
   -e FINNHUB_API_KEY=your_finnhub_api_key \
   -e PRICE_CACHE_EXPIRATION_SECONDS=60 \
   -v /path/to/data:/app/data \
-  ghcr.io/YOUR_GITHUB_USERNAME/papercord:latest
+  ghcr.io/ericbriscoe/papercord:latest
 ```
 
 Or use Docker Compose (see the `docker-compose.yml` file in the repository).
