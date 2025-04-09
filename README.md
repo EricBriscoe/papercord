@@ -79,10 +79,6 @@ docker run -d \
 
 Or use Docker Compose (see the `docker-compose.yml` file in the repository).
 
-### TrueNAS Deployment
-
-For detailed instructions on deploying to TrueNAS, see [TRUENAS_DEPLOYMENT.md](TRUENAS_DEPLOYMENT.md).
-
 ### Getting API Keys
 
 - **Discord Bot Token**: 
