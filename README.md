@@ -14,6 +14,8 @@ https://discord.com/oauth2/authorize?client_id=784799291268136980&permissions=21
 - **Transaction History**: Check your past trades
 - **Stock Price Check**: Look up current stock prices
 - **Account Reset**: Reset your account back to the starting balance
+- **Caching**: Stock price caching system to reduce API calls with configurable expiration time
+- **Advanced Sorting**: Sort your portfolio by symbol, market value, profit/loss, or percent change
 
 ## Commands
 
@@ -22,19 +24,21 @@ The bot uses Discord slash commands:
 - `/buy symbol: AAPL quantity: 10` - Buy shares of a stock
 - `/sell symbol: AAPL quantity: 5` - Sell shares of a stock
 - `/price symbol: AAPL` - Check the current price of a stock
-- `/portfolio` - View your current portfolio with profits/losses
+- `/portfolio` - View your current portfolio with profits/losses and sorting options
 - `/history limit: 10` - View your transaction history (default 10 transactions, max 25)
 - `/reset confirm: confirm` - Reset your account back to $100,000 (Must type "confirm")
 
-## Setup
+## Setup Options
 
-### Prerequisites
+### Local Installation
+
+#### Prerequisites
 
 - Node.js (v16 or higher)
 - Discord Bot Token
 - Finnhub API Key (optional, but recommended)
 
-### Installation
+#### Installation
 
 1. Clone the repository
 2. Install dependencies:
@@ -45,6 +49,7 @@ The bot uses Discord slash commands:
    ```
    DISCORD_TOKEN=your_discord_bot_token_here
    FINNHUB_API_KEY=your_finnhub_api_key_here
+   PRICE_CACHE_EXPIRATION_SECONDS=60
    ```
 4. Build the project:
    ```
@@ -54,6 +59,30 @@ The bot uses Discord slash commands:
    ```
    npm start
    ```
+
+### Docker Deployment
+
+You can also run the bot using Docker:
+
+```bash
+# Pull the image (replace YOUR_GITHUB_USERNAME with your GitHub username)
+docker pull ghcr.io/YOUR_GITHUB_USERNAME/papercord:latest
+
+# Run the container
+docker run -d \
+  --name papercord \
+  -e DISCORD_TOKEN=your_discord_bot_token \
+  -e FINNHUB_API_KEY=your_finnhub_api_key \
+  -e PRICE_CACHE_EXPIRATION_SECONDS=60 \
+  -v /path/to/data:/app/data \
+  ghcr.io/YOUR_GITHUB_USERNAME/papercord:latest
+```
+
+Or use Docker Compose (see the `docker-compose.yml` file in the repository).
+
+### TrueNAS Deployment
+
+For detailed instructions on deploying to TrueNAS, see [TRUENAS_DEPLOYMENT.md](TRUENAS_DEPLOYMENT.md).
 
 ### Getting API Keys
 
@@ -71,6 +100,7 @@ The bot uses Discord slash commands:
 
 - Run in development mode: `npm run dev`
 - Build: `npm run build`
+- Build Docker image: `docker build -t papercord .`
 
 ## Tech Stack
 
@@ -78,6 +108,7 @@ The bot uses Discord slash commands:
 - Discord.js
 - SQLite (better-sqlite3)
 - Finnhub API
+- Docker
 
 ## License
 
