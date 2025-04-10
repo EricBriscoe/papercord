@@ -36,6 +36,18 @@ export const resetCommand: Command = {
             `);
             deleteTransactions.run(interaction.user.id);
             
+            // Delete all options positions for this user
+            const deleteOptionsPositions = db.prepare(`
+                DELETE FROM options_positions WHERE userId = ?
+            `);
+            deleteOptionsPositions.run(interaction.user.id);
+            
+            // Delete all options transactions for this user
+            const deleteOptionsTransactions = db.prepare(`
+                DELETE FROM options_transactions WHERE userId = ?
+            `);
+            deleteOptionsTransactions.run(interaction.user.id);
+            
             // Reset cash balance to default ($100,000)
             const resetBalance = db.prepare(`
                 UPDATE users SET cashBalance = 100000.00 WHERE userId = ?
@@ -50,7 +62,7 @@ export const resetCommand: Command = {
             
             const embed = new EmbedBuilder()
                 .setTitle('Account Reset')
-                .setDescription('Your paper trading account has been reset to $100,000. All your positions and transaction history have been cleared.')
+                .setDescription('Your paper trading account has been reset to $100,000. All your positions, options, and transaction history have been cleared.')
                 .setColor('#00FF00')
                 .setTimestamp();
                 

@@ -10,6 +10,7 @@ import { priceOptionCommand } from './commands/price_option';
 import { tradeOptionCommand } from './commands/trade_option';
 import { optionsPortfolioCommand } from './commands/options_portfolio';
 import { closeOptionCommand } from './commands/close_option';
+import { leaderboardCommand } from './commands/leaderboard';
 import { Command } from './models/command';
 import { optionsService } from './services/optionsService';
 import { optionsDb } from './database/operations';
@@ -22,7 +23,8 @@ const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers
     ] 
 });
 
@@ -41,7 +43,9 @@ const commands = new Collection<string, Command>();
     priceOptionCommand,
     tradeOptionCommand,
     optionsPortfolioCommand,
-    closeOptionCommand
+    closeOptionCommand,
+    // Community commands
+    leaderboardCommand
 ].forEach(command => {
     commands.set(command.name, command);
 });
