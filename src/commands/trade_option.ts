@@ -170,7 +170,7 @@ export const tradeOptionCommand: Command = {
                         await interaction.editReply(
                             `You don't have enough margin available. ` +
                             `Required: ${formatCurrency(marginRequired * quantity)}, ` +
-                            `Available: ${formatCurrency(marginStatus.availableMargin - marginStatus.marginUsed)}`
+                            `Available: ${formatCurrency(marginStatus.availableMargin)}`
                         );
                         return;
                     }

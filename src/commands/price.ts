@@ -1,7 +1,7 @@
 import { ApplicationCommandOptionType, ChatInputCommandInteraction, EmbedBuilder } from 'discord.js';
 import { Command } from '../models/command';
 import { stockService } from '../services/stockService';
-import { formatCurrency } from '../utils/formatters';
+import { formatCurrency, encodeUrlWithPlus } from '../utils/formatters';
 
 export const priceCommand: Command = {
     name: 'price',
@@ -33,13 +33,16 @@ export const priceCommand: Command = {
                 .setDescription(`Current price: ${formatCurrency(stockData.price)}`)
                 .setColor('#0099ff')
                 .setTimestamp();
-                
+            
+            // Encode URLs properly before setting them in the embed
             if (companyInfo?.logo) {
-                embed.setThumbnail(companyInfo.logo);
+                const encodedLogoUrl = encodeUrlWithPlus(companyInfo.logo);
+                embed.setThumbnail(encodedLogoUrl);
             }
             
             if (companyInfo?.weburl) {
-                embed.setURL(companyInfo.weburl);
+                const encodedWebUrl = encodeUrlWithPlus(companyInfo.weburl);
+                embed.setURL(encodedWebUrl);
             }
             
             await interaction.editReply({ embeds: [embed] });
