@@ -1,34 +1,50 @@
-# PaperCord Trading Bot
+# 🚀 PaperCord - Stock Market Trading Simulator for Discord
 
-A Discord bot for paper trading US equities. Users can buy and sell stocks with virtual money, track their portfolio performance, and compete with friends - all within Discord.
+**Trade stocks and options with ZERO financial risk!** PaperCord lets you experience the thrill of stock market trading without risking real money. Compete with friends, learn investing strategies, and have fun - all within your Discord server!
 
-## Add to your server:
+## ✨ Why You Need This Bot
 
-https://discord.com/oauth2/authorize?client_id=784799291268136980&permissions=2147862592&integration_type=0&scope=bot+applications.commands
+- 💰 Start with $100,000 virtual cash
+- 📈 Buy and sell real stocks with live market data
+- 🏆 Compete on a server-wide leaderboard
+- 📊 Track your portfolio performance in real-time
+- 🔄 Practice trading strategies risk-free
+- 🎓 Learn how options trading works
+- 🎮 Make finance fun and competitive!
 
-## Features
+## 🔗 Add to Your Server Now!
 
-- **Paper Trading**: Buy and sell US stocks with virtual money ($100,000 starting balance)
-- **Real-time Data**: Get real-time or delayed stock prices from Finnhub API
-- **Portfolio Tracking**: View your current positions, profits/losses, and cash balance
-- **Transaction History**: Check your past trades
-- **Stock Price Check**: Look up current stock prices
-- **Account Reset**: Reset your account back to the starting balance
-- **Caching**: Stock price caching system to reduce API calls with configurable expiration time
-- **Advanced Sorting**: Sort your portfolio by symbol, market value, profit/loss, or percent change
+[**Click Here to Add PaperCord to Your Server**](https://discord.com/oauth2/authorize?client_id=784799291268136980&permissions=2147862592&integration_type=0&scope=bot+applications.commands)
 
-## Commands
+## 💼 Available Commands
 
-The bot uses Discord slash commands:
-
+### Stock Trading
 - `/buy symbol: AAPL quantity: 10` - Buy shares of a stock
 - `/sell symbol: AAPL quantity: 5` - Sell shares of a stock
 - `/price symbol: AAPL` - Check the current price of a stock
-- `/portfolio` - View your current portfolio with profits/losses and sorting options
-- `/history limit: 10` - View your transaction history (default 10 transactions, max 25)
-- `/reset confirm: confirm` - Reset your account back to $100,000 (Must type "confirm")
+- `/portfolio` - View your current stocks with profits/losses
+- `/history limit: 10` - View your transaction history
 
-## Setup Options
+### Options Trading
+- `/trade_option` - Buy or sell option contracts
+- `/price_option` - Calculate the price of an options contract
+- `/options_portfolio` - View your options positions
+- `/close_option` - Close an existing options position
+- `/margin` - Check your available margin for options trading
+
+### Account Management
+- `/reset confirm: confirm` - Reset your account back to $100,000
+- `/leaderboard` - See who has the highest portfolio value in your server
+
+## 🎮 Quick Start Guide
+
+1. Add the bot to your server using the link above
+2. Check a stock price with `/price symbol: QQQ`
+3. Buy your first shares with `/buy symbol: QQQ quantity: 10`
+4. Track your portfolio with `/portfolio`
+5. Compete with friends and check the `/leaderboard`
+
+## Self Hostable!
 
 ### Local Installation
 
