@@ -6,12 +6,6 @@ dotenv.config();
 
 // API key should be set in .env file as FINNHUB_API_KEY
 const API_KEY = process.env.FINNHUB_API_KEY || '';
-// Default cache expiration time in milliseconds (1 minute)
-const DEFAULT_CACHE_EXPIRATION_MS = 60000;
-// Allow overriding cache expiration time via environment variable (in seconds)
-const CACHE_EXPIRATION_SECONDS = process.env.PRICE_CACHE_EXPIRATION_SECONDS 
-    ? parseInt(process.env.PRICE_CACHE_EXPIRATION_SECONDS, 10) 
-    : DEFAULT_CACHE_EXPIRATION_MS / 1000;
 
 // Initialize Finnhub client
 const api_key = finnhub.ApiClient.instance.authentications['api_key'];
@@ -28,7 +22,7 @@ if (API_KEY) {
 // Define interfaces for our cache
 interface CachedPrice {
     price: number;
-    timestamp: number; // Unix timestamp in ms when this price was cached
+    minuteKey: string; // Key representing the minute this price was cached (YYYY-MM-DD-HH-MM format)
 }
 
 interface PriceCache {
@@ -39,32 +33,31 @@ interface PriceCache {
  * Stock market service
  */
 export const stockService = {
-    // Price cache with timestamps
+    // Price cache with minute keys
     priceCache: {} as PriceCache,
     
-    // Cache expiration time in milliseconds
-    cacheExpirationMs: CACHE_EXPIRATION_SECONDS * 1000,
-
     /**
-     * Set cache expiration time
+     * Generate a key for the current minute
+     * Format: YYYY-MM-DD-HH-MM
      */
-    setCacheExpiration(milliseconds: number): void {
-        if (milliseconds < 0) {
-            throw new Error('Cache expiration time cannot be negative');
-        }
-        this.cacheExpirationMs = milliseconds;
+    getMinuteKey(date = new Date()): string {
+        return `${date.getFullYear()}-${
+            String(date.getMonth() + 1).padStart(2, '0')}-${
+            String(date.getDate()).padStart(2, '0')}-${
+            String(date.getHours()).padStart(2, '0')}-${
+            String(date.getMinutes()).padStart(2, '0')}`;
     },
 
     /**
-     * Check if a cached price is still valid
+     * Check if a cached price is still valid for the current minute
      */
     isCacheValid(cachedPrice: CachedPrice): boolean {
-        const now = Date.now();
-        return (now - cachedPrice.timestamp) < this.cacheExpirationMs;
+        const currentMinuteKey = this.getMinuteKey();
+        return cachedPrice.minuteKey === currentMinuteKey;
     },
 
     /**
-     * Get current stock price with caching
+     * Get current stock price with caching to the nearest minute
      */
     async getStockPrice(symbol: string): Promise<{ symbol: string; price: number | null; error?: string; cached?: boolean }> {
         try {
@@ -84,10 +77,10 @@ export const stockService = {
             if (!API_KEY) {
                 const dummyPrice = await this.getDummyStockPrice(normalizedSymbol);
                 
-                // Cache the dummy price too
+                // Cache the dummy price with current minute key
                 this.priceCache[normalizedSymbol] = {
                     price: dummyPrice,
-                    timestamp: Date.now()
+                    minuteKey: this.getMinuteKey()
                 };
                 
                 return { symbol: normalizedSymbol, price: dummyPrice };
@@ -101,10 +94,10 @@ export const stockService = {
                     }
                     
                     if (data && typeof data.c === 'number') {
-                        // Cache the result
+                        // Cache the result with current minute key
                         this.priceCache[normalizedSymbol] = {
                             price: data.c,
-                            timestamp: Date.now()
+                            minuteKey: this.getMinuteKey()
                         };
                         
                         resolve({ symbol: normalizedSymbol, price: data.c });
