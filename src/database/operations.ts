@@ -40,7 +40,9 @@ interface OptionsPosition {
     expirationDate: string;
     purchasePrice: number;
     position: 'long' | 'short';
-    status: 'open' | 'closed' | 'expired' | 'exercised';
+    marginRequired: number;
+    isSecured: boolean;
+    status: 'open' | 'closed' | 'expired' | 'exercised' | 'liquidated';
 }
 
 interface OptionsTransaction {
@@ -53,7 +55,10 @@ interface OptionsTransaction {
     expirationDate: string;
     price: number;
     position: 'long' | 'short';
-    type: 'open' | 'close' | 'exercise' | 'expire';
+    type: 'open' | 'close' | 'exercise' | 'expire' | 'liquidate';
+    profit?: number;
+    marginRequired: number;
+    isSecured: boolean;
     timestamp?: string;
 }
 
@@ -247,11 +252,13 @@ export const optionsDb = {
         optionType: 'call' | 'put', 
         strikePrice: number, 
         expirationDate: string,
-        position: 'long' | 'short'
+        position: 'long' | 'short',
+        isSecured: boolean
     ): OptionsPosition | undefined {
         const stmt = db.prepare(`
             SELECT * FROM options_positions
-            WHERE userId = ? AND symbol = ? AND optionType = ? AND strikePrice = ? AND expirationDate = ? AND position = ? AND status = 'open'
+            WHERE userId = ? AND symbol = ? AND optionType = ? AND strikePrice = ? 
+            AND expirationDate = ? AND position = ? AND isSecured = ? AND status = 'open'
         `);
         return stmt.get(
             userId, 
@@ -259,7 +266,8 @@ export const optionsDb = {
             optionType, 
             strikePrice, 
             expirationDate,
-            position
+            position,
+            isSecured ? 1 : 0
         ) as OptionsPosition | undefined;
     },
     
@@ -274,11 +282,16 @@ export const optionsDb = {
         strikePrice: number, 
         expirationDate: string,
         purchasePrice: number,
-        position: 'long' | 'short'
+        position: 'long' | 'short',
+        marginRequired: number,
+        isSecured: boolean
     ): number {
         const stmt = db.prepare(`
-            INSERT INTO options_positions (userId, symbol, optionType, quantity, strikePrice, expirationDate, purchasePrice, position)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO options_positions (
+                userId, symbol, optionType, quantity, strikePrice, 
+                expirationDate, purchasePrice, position, marginRequired, isSecured
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         const result = stmt.run(
             userId, 
@@ -288,7 +301,9 @@ export const optionsDb = {
             strikePrice, 
             expirationDate,
             purchasePrice,
-            position
+            position,
+            marginRequired,
+            isSecured ? 1 : 0
         );
         return result.lastInsertRowid as number;
     },
@@ -299,20 +314,21 @@ export const optionsDb = {
     updatePosition(
         positionId: number,
         quantity: number,
-        purchasePrice: number
+        purchasePrice: number,
+        marginRequired: number
     ): void {
         const stmt = db.prepare(`
             UPDATE options_positions
-            SET quantity = ?, purchasePrice = ?
+            SET quantity = ?, purchasePrice = ?, marginRequired = ?
             WHERE id = ?
         `);
-        stmt.run(quantity, purchasePrice, positionId);
+        stmt.run(quantity, purchasePrice, marginRequired, positionId);
     },
     
     /**
      * Update position status
      */
-    updatePositionStatus(positionId: number, status: 'open' | 'closed' | 'expired' | 'exercised'): void {
+    updatePositionStatus(positionId: number, status: 'open' | 'closed' | 'expired' | 'exercised' | 'liquidated'): void {
         const stmt = db.prepare('UPDATE options_positions SET status = ? WHERE id = ?');
         stmt.run(status, positionId);
     },
@@ -341,6 +357,31 @@ export const optionsDb = {
     },
     
     /**
+     * Get total margin requirements for a user's options positions
+     */
+    getTotalMarginRequirements(userId: string): number {
+        const stmt = db.prepare(`
+            SELECT COALESCE(SUM(marginRequired), 0) as totalMargin
+            FROM options_positions
+            WHERE userId = ? AND status = 'open'
+        `);
+        const result = stmt.get(userId) as { totalMargin: number };
+        return result ? result.totalMargin : 0;
+    },
+    
+    /**
+     * Get options positions for a specific symbol
+     * Used for checking covered calls and cash-secured puts
+     */
+    getPositionsBySymbol(userId: string, symbol: string): OptionsPosition[] {
+        const stmt = db.prepare(`
+            SELECT * FROM options_positions
+            WHERE userId = ? AND symbol = ? AND status = 'open'
+        `);
+        return stmt.all(userId, symbol.toUpperCase()) as OptionsPosition[];
+    },
+    
+    /**
      * Add an options transaction
      */
     addTransaction(
@@ -352,14 +393,17 @@ export const optionsDb = {
         expirationDate: string,
         price: number,
         position: 'long' | 'short',
-        type: 'open' | 'close' | 'exercise' | 'expire'
+        type: 'open' | 'close' | 'exercise' | 'expire' | 'liquidate',
+        profit: number = 0,
+        marginRequired: number = 0,
+        isSecured: boolean = false
     ): void {
         const stmt = db.prepare(`
             INSERT INTO options_transactions (
                 userId, symbol, optionType, quantity, strikePrice, 
-                expirationDate, price, position, type
+                expirationDate, price, position, type, profit, marginRequired, isSecured
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         stmt.run(
             userId, 
@@ -370,7 +414,10 @@ export const optionsDb = {
             expirationDate,
             price,
             position,
-            type
+            type,
+            profit,
+            marginRequired,
+            isSecured ? 1 : 0
         );
     },
     
@@ -385,6 +432,32 @@ export const optionsDb = {
             LIMIT ?
         `);
         return stmt.all(userId, limit) as OptionsTransaction[];
+    },
+    
+    /**
+     * Get all active short positions for a user
+     * Used for margin calculations and liquidation
+     */
+    getActiveShortPositions(userId: string): OptionsPosition[] {
+        const stmt = db.prepare(`
+            SELECT * FROM options_positions
+            WHERE userId = ? AND position = 'short' AND status = 'open'
+            ORDER BY marginRequired DESC
+        `);
+        return stmt.all(userId) as OptionsPosition[];
+    },
+    
+    /**
+     * Get all unique userIds that have open option positions
+     * Used for batch processing margin calls
+     */
+    getUsersWithOpenPositions(): string[] {
+        const stmt = db.prepare(`
+            SELECT DISTINCT userId FROM options_positions
+            WHERE status = 'open'
+        `);
+        const results = stmt.all() as {userId: string}[];
+        return results.map(row => row.userId);
     }
 };
 

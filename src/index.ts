@@ -12,6 +12,7 @@ import { optionsPortfolioCommand } from './commands/options_portfolio';
 import { closeOptionCommand } from './commands/close_option';
 import { Command } from './models/command';
 import { optionsService } from './services/optionsService';
+import { optionsDb } from './database/operations';
 
 // Load environment variables
 dotenv.config();
@@ -85,9 +86,20 @@ client.once(Events.ClientReady, async (readyClient) => {
         setInterval(async () => {
             try {
                 console.log('Processing margin calls...');
-                const result = await optionsService.processMarginCalls();
-                if (result.processed > 0) {
-                    console.log(`Processed ${result.processed} margin calls, liquidated ${result.liquidated}.`);
+                // Process margin calls for all users with open positions
+                const usersWithOpenPositions = optionsDb.getUsersWithOpenPositions();
+                let totalLiquidated = 0;
+                
+                for (const userId of usersWithOpenPositions) {
+                    const result = await optionsService.processMarginCalls(userId);
+                    if (result.positionsLiquidated && result.positionsLiquidated > 0) {
+                        console.log(`Liquidated ${result.positionsLiquidated} positions for user ${userId}. ${result.message}`);
+                        totalLiquidated += result.positionsLiquidated;
+                    }
+                }
+                
+                if (totalLiquidated > 0) {
+                    console.log(`Total positions liquidated: ${totalLiquidated}`);
                 }
             } catch (error) {
                 console.error('Error processing margin calls:', error);

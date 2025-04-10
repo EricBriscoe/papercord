@@ -19,8 +19,6 @@ db.exec(`
     CREATE TABLE IF NOT EXISTS users (
         userId TEXT PRIMARY KEY,
         cashBalance REAL DEFAULT 100000.00,
-        marginBalance REAL DEFAULT 0.00,
-        marginUsed REAL DEFAULT 0.00,
         createdAt TEXT DEFAULT (datetime('now', 'utc'))
     );
 
@@ -55,7 +53,9 @@ db.exec(`
         expirationDate TEXT,
         purchasePrice REAL,
         position TEXT CHECK(position IN ('long', 'short')),
-        status TEXT DEFAULT 'open' CHECK(status IN ('open', 'closed', 'expired', 'exercised')),
+        marginRequired REAL DEFAULT 0.0,
+        isSecured BOOLEAN DEFAULT 0,
+        status TEXT DEFAULT 'open' CHECK(status IN ('open', 'closed', 'expired', 'exercised', 'liquidated')),
         FOREIGN KEY (userId) REFERENCES users(userId)
     );
     
@@ -69,7 +69,10 @@ db.exec(`
         expirationDate TEXT,
         price REAL,
         position TEXT CHECK(position IN ('long', 'short')),
-        type TEXT CHECK(type IN ('open', 'close', 'exercise', 'expire')),
+        type TEXT CHECK(type IN ('open', 'close', 'exercise', 'expire', 'liquidate')),
+        profit REAL,
+        marginRequired REAL DEFAULT 0.0,
+        isSecured BOOLEAN DEFAULT 0,
         timestamp TEXT DEFAULT (datetime('now', 'utc')),
         FOREIGN KEY (userId) REFERENCES users(userId)
     );
