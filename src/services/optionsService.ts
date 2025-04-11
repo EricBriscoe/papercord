@@ -103,8 +103,8 @@ export const optionsService = {
                 };
             }
 
-            // Get volatility estimate
-            const volatility = getHistoricalVolatility(symbol);
+            // Get volatility estimate - now async with real data
+            const volatility = await getHistoricalVolatility(symbol);
 
             // Calculate option price using Black-Scholes
             const type = optionType === 'call' ? OptionType.CALL : OptionType.PUT;
@@ -348,8 +348,8 @@ export const optionsService = {
                 return 0;
             }
             
-            // Get volatility estimate
-            const volatility = getHistoricalVolatility(option.symbol);
+            // Get volatility estimate - now async with real data
+            const volatility = await getHistoricalVolatility(option.symbol);
             
             // Use Black-Scholes to calculate option price
             const type = option.optionType === 'call' ? OptionType.CALL : OptionType.PUT;

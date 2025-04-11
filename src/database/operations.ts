@@ -526,3 +526,172 @@ export const marginDb = {
         return stmt.all(userId, limit) as MarginCall[];
     }
 };
+
+/**
+ * Price cache database operations
+ */
+export interface PriceCache {
+    id?: number;
+    symbol: string;
+    price: number;
+    timestamp: string;
+    source: 'finnhub' | 'yahoo';
+    resolution: string;
+    extra_data?: string;
+}
+
+export const priceCacheDb = {
+    /**
+     * Store price data in cache
+     */
+    storePrice(
+        symbol: string,
+        price: number,
+        source: 'finnhub' | 'yahoo',
+        resolution: string = '1m',
+        extraData?: Record<string, any>
+    ): void {
+        // Round the current timestamp to the specified resolution
+        // This ensures we don't store duplicate entries for the same time period
+        const now = new Date();
+        let timestamp = now;
+        
+        if (resolution === '1m') {
+            // Round to the nearest minute
+            timestamp = new Date(now.setSeconds(0, 0));
+        } else if (resolution === '5m') {
+            // Round to the nearest 5 minutes
+            const minutes = Math.floor(now.getMinutes() / 5) * 5;
+            timestamp = new Date(now.setMinutes(minutes, 0, 0));
+        } else if (resolution === '15m') {
+            // Round to the nearest 15 minutes
+            const minutes = Math.floor(now.getMinutes() / 15) * 15;
+            timestamp = new Date(now.setMinutes(minutes, 0, 0));
+        } else if (resolution === '1h') {
+            // Round to the nearest hour
+            timestamp = new Date(now.setMinutes(0, 0, 0));
+        } else if (resolution === '1d') {
+            // Round to the beginning of the day
+            timestamp = new Date(now.setHours(0, 0, 0, 0));
+        }
+        
+        const timestampString = timestamp.toISOString();
+        const extraDataString = extraData ? JSON.stringify(extraData) : null;
+        
+        const stmt = db.prepare(`
+            INSERT OR REPLACE INTO price_cache (symbol, price, timestamp, source, resolution, extra_data)
+            VALUES (?, ?, ?, ?, ?, ?)
+        `);
+        
+        stmt.run(
+            symbol.toUpperCase(),
+            price,
+            timestampString,
+            source,
+            resolution,
+            extraDataString
+        );
+    },
+    
+    /**
+     * Get cached price data for a symbol
+     * @param symbol The stock symbol
+     * @param source The data source ('finnhub' or 'yahoo')
+     * @param resolution The time resolution of the data
+     * @param maxAgeMinutes Maximum age of cached data in minutes
+     * @returns The cached price data or undefined if not found or expired
+     */
+    getCachedPrice(
+        symbol: string,
+        source: 'finnhub' | 'yahoo',
+        resolution: string = '1m',
+        maxAgeMinutes: number = 15
+    ): PriceCache | undefined {
+        const stmt = db.prepare(`
+            SELECT * FROM price_cache
+            WHERE symbol = ? AND source = ? AND resolution = ?
+            AND datetime(timestamp) > datetime('now', '-' || ? || ' minutes')
+            ORDER BY timestamp DESC
+            LIMIT 1
+        `);
+        
+        return stmt.get(
+            symbol.toUpperCase(),
+            source,
+            resolution,
+            maxAgeMinutes
+        ) as PriceCache | undefined;
+    },
+    
+    /**
+     * Get cached historical prices for a symbol
+     * @param symbol The stock symbol
+     * @param source The data source ('finnhub' or 'yahoo')
+     * @param resolution The time resolution of the data
+     * @param limit Maximum number of results to return
+     * @returns Array of cached price data
+     */
+    getHistoricalPrices(
+        symbol: string,
+        source: 'finnhub' | 'yahoo',
+        resolution: string = '1d',
+        limit: number = 30
+    ): PriceCache[] {
+        const stmt = db.prepare(`
+            SELECT * FROM price_cache
+            WHERE symbol = ? AND source = ? AND resolution = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        `);
+        
+        return stmt.all(
+            symbol.toUpperCase(),
+            source,
+            resolution,
+            limit
+        ) as PriceCache[];
+    },
+    
+    /**
+     * Delete expired cache entries to keep the database size manageable
+     * @param maxAgeDays Maximum age of cached data in days
+     * @returns The number of deleted entries
+     */
+    cleanupCache(maxAgeDays: number = 30): number {
+        const stmt = db.prepare(`
+            DELETE FROM price_cache
+            WHERE datetime(timestamp) < datetime('now', '-' || ? || ' days')
+        `);
+        
+        const result = stmt.run(maxAgeDays);
+        return result.changes;
+    },
+    
+    /**
+     * Get the last cached time for a symbol
+     * @param symbol The stock symbol
+     * @param source The data source ('finnhub' or 'yahoo')
+     * @param resolution The time resolution of the data
+     * @returns The timestamp of the last cached price or null if no cache exists
+     */
+    getLastCacheTime(
+        symbol: string,
+        source: 'finnhub' | 'yahoo',
+        resolution: string = '1m'
+    ): string | null {
+        const stmt = db.prepare(`
+            SELECT timestamp FROM price_cache
+            WHERE symbol = ? AND source = ? AND resolution = ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+        `);
+        
+        const result = stmt.get(
+            symbol.toUpperCase(),
+            source,
+            resolution
+        ) as { timestamp: string } | undefined;
+        
+        return result ? result.timestamp : null;
+    }
+};
