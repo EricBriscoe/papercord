@@ -536,8 +536,7 @@ export interface PriceCache {
     price: number;
     timestamp: string;
     source: 'finnhub' | 'yahoo';
-    resolution: string;
-    extra_data?: string;
+    interval: string;
 }
 
 export const priceCacheDb = {
@@ -548,39 +547,16 @@ export const priceCacheDb = {
         symbol: string,
         price: number,
         source: 'finnhub' | 'yahoo',
-        resolution: string = '1m',
-        extraData?: Record<string, any>
+        timestamp: Date = new Date(),
+        interval: string = '1m'
     ): void {
-        // Round the current timestamp to the specified resolution
-        // This ensures we don't store duplicate entries for the same time period
-        const now = new Date();
-        let timestamp = now;
-        
-        if (resolution === '1m') {
-            // Round to the nearest minute
-            timestamp = new Date(now.setSeconds(0, 0));
-        } else if (resolution === '5m') {
-            // Round to the nearest 5 minutes
-            const minutes = Math.floor(now.getMinutes() / 5) * 5;
-            timestamp = new Date(now.setMinutes(minutes, 0, 0));
-        } else if (resolution === '15m') {
-            // Round to the nearest 15 minutes
-            const minutes = Math.floor(now.getMinutes() / 15) * 15;
-            timestamp = new Date(now.setMinutes(minutes, 0, 0));
-        } else if (resolution === '1h') {
-            // Round to the nearest hour
-            timestamp = new Date(now.setMinutes(0, 0, 0));
-        } else if (resolution === '1d') {
-            // Round to the beginning of the day
-            timestamp = new Date(now.setHours(0, 0, 0, 0));
-        }
-        
-        const timestampString = timestamp.toISOString();
-        const extraDataString = extraData ? JSON.stringify(extraData) : null;
+        // Round timestamp based on the interval
+        const roundedTimestamp = this.roundTimestampByInterval(timestamp, interval);
+        const timestampString = roundedTimestamp.toISOString();
         
         const stmt = db.prepare(`
-            INSERT OR REPLACE INTO price_cache (symbol, price, timestamp, source, resolution, extra_data)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO price_cache (symbol, price, timestamp, source, interval)
+            VALUES (?, ?, ?, ?, ?)
         `);
         
         stmt.run(
@@ -588,28 +564,94 @@ export const priceCacheDb = {
             price,
             timestampString,
             source,
-            resolution,
-            extraDataString
+            interval
         );
+    },
+
+    /**
+     * Store multiple price entries at once (batch insert)
+     */
+    storePriceBatch(prices: Array<{
+        symbol: string;
+        price: number;
+        timestamp: Date;
+        source: 'finnhub' | 'yahoo';
+        interval: string;
+    }>): void {
+        const stmt = db.prepare(`
+            INSERT OR REPLACE INTO price_cache (symbol, price, timestamp, source, interval)
+            VALUES (?, ?, ?, ?, ?)
+        `);
+        
+        const insertMany = db.transaction((priceEntries) => {
+            for (const entry of priceEntries) {
+                const roundedTimestamp = this.roundTimestampByInterval(
+                    entry.timestamp,
+                    entry.interval
+                );
+                stmt.run(
+                    entry.symbol.toUpperCase(),
+                    entry.price,
+                    roundedTimestamp.toISOString(),
+                    entry.source,
+                    entry.interval
+                );
+            }
+        });
+        
+        insertMany(prices);
     },
     
     /**
-     * Get cached price data for a symbol
-     * @param symbol The stock symbol
-     * @param source The data source ('finnhub' or 'yahoo')
-     * @param resolution The time resolution of the data
-     * @param maxAgeMinutes Maximum age of cached data in minutes
-     * @returns The cached price data or undefined if not found or expired
+     * Round a timestamp based on the interval
      */
-    getCachedPrice(
+    roundTimestampByInterval(timestamp: Date, interval: string): Date {
+        const date = new Date(timestamp);
+        
+        switch (interval) {
+            case '1m':
+                // Round to the minute
+                date.setSeconds(0, 0);
+                break;
+            case '5m':
+                // Round to the nearest 5 minutes
+                const minutes5 = Math.floor(date.getMinutes() / 5) * 5;
+                date.setMinutes(minutes5, 0, 0);
+                break;
+            case '15m':
+                // Round to the nearest 15 minutes
+                const minutes15 = Math.floor(date.getMinutes() / 15) * 15;
+                date.setMinutes(minutes15, 0, 0);
+                break;
+            case '30m':
+                // Round to the nearest 30 minutes
+                const minutes30 = Math.floor(date.getMinutes() / 30) * 30;
+                date.setMinutes(minutes30, 0, 0);
+                break;
+            case '1h':
+                // Round to the hour
+                date.setMinutes(0, 0, 0);
+                break;
+            case '1d':
+                // Round to the day
+                date.setHours(0, 0, 0, 0);
+                break;
+        }
+        
+        return date;
+    },
+    
+    /**
+     * Get the latest cached price for a symbol
+     */
+    getLatestPrice(
         symbol: string,
         source: 'finnhub' | 'yahoo',
-        resolution: string = '1m',
         maxAgeMinutes: number = 15
     ): PriceCache | undefined {
         const stmt = db.prepare(`
             SELECT * FROM price_cache
-            WHERE symbol = ? AND source = ? AND resolution = ?
+            WHERE symbol = ? AND source = ? AND interval = '1m'
             AND datetime(timestamp) > datetime('now', '-' || ? || ' minutes')
             ORDER BY timestamp DESC
             LIMIT 1
@@ -618,38 +660,145 @@ export const priceCacheDb = {
         return stmt.get(
             symbol.toUpperCase(),
             source,
-            resolution,
             maxAgeMinutes
         ) as PriceCache | undefined;
     },
     
     /**
-     * Get cached historical prices for a symbol
-     * @param symbol The stock symbol
-     * @param source The data source ('finnhub' or 'yahoo')
-     * @param resolution The time resolution of the data
-     * @param limit Maximum number of results to return
-     * @returns Array of cached price data
+     * Get a time series of prices for a symbol
      */
-    getHistoricalPrices(
+    getTimeSeries(
         symbol: string,
         source: 'finnhub' | 'yahoo',
-        resolution: string = '1d',
-        limit: number = 30
+        interval: string = '1d',
+        limit: number = 30,
+        startDate?: Date,
+        endDate?: Date
     ): PriceCache[] {
-        const stmt = db.prepare(`
+        let query = `
             SELECT * FROM price_cache
-            WHERE symbol = ? AND source = ? AND resolution = ?
-            ORDER BY timestamp DESC
-            LIMIT ?
-        `);
+            WHERE symbol = ? AND source = ? AND interval = ?
+        `;
         
-        return stmt.all(
+        const queryParams: any[] = [
             symbol.toUpperCase(),
             source,
-            resolution,
-            limit
-        ) as PriceCache[];
+            interval
+        ];
+        
+        if (startDate) {
+            query += ` AND datetime(timestamp) >= datetime(?)`;
+            queryParams.push(startDate.toISOString());
+        }
+        
+        if (endDate) {
+            query += ` AND datetime(timestamp) <= datetime(?)`;
+            queryParams.push(endDate.toISOString());
+        }
+        
+        query += ` ORDER BY timestamp ASC LIMIT ?`;
+        queryParams.push(limit);
+        
+        const stmt = db.prepare(query);
+        return stmt.all(...queryParams) as PriceCache[];
+    },
+    
+    /**
+     * Check if we have enough historical data for a symbol
+     */
+    hasAdequateHistoricalData(
+        symbol: string,
+        source: 'finnhub' | 'yahoo',
+        interval: string = '1d', 
+        minDataPoints: number = 20,
+        maxAgeInDays: number = 30
+    ): boolean {
+        const stmt = db.prepare(`
+            SELECT COUNT(*) as count 
+            FROM price_cache
+            WHERE symbol = ? AND source = ? AND interval = ?
+            AND datetime(timestamp) > datetime('now', '-' || ? || ' days')
+        `);
+        
+        const result = stmt.get(
+            symbol.toUpperCase(),
+            source,
+            interval,
+            maxAgeInDays
+        ) as { count: number };
+        
+        return result.count >= minDataPoints;
+    },
+    
+    /**
+     * Check if we have complete data coverage with at least one price point in each interval
+     * @param symbol Stock ticker symbol
+     * @param source Data source ('yahoo' or 'finnhub')
+     * @param intervalMinutes Interval size in minutes (e.g., 1440 for daily data)
+     * @param durationMinutes How far back to check in minutes (e.g., 43200 for 30 days)
+     * @returns Whether complete coverage exists
+     */
+    hasCompleteCoverage(
+        symbol: string,
+        source: 'finnhub' | 'yahoo',
+        intervalMinutes: number = 1440, // Default to daily (24 hours * 60 minutes)
+        durationMinutes: number = 43200 // Default to 30 days
+    ): boolean {
+        // Use SQLite's recursive CTE to generate a series of time intervals
+        // and check if each interval has at least one data point
+        const stmt = db.prepare(`
+            WITH RECURSIVE
+            -- Generate time intervals going back from current time
+            time_intervals(interval_start, interval_end, interval_num) AS (
+                -- Base case: start with the most recent interval
+                SELECT 
+                    datetime('now', '-' || ? || ' minutes'),
+                    datetime('now'),
+                    1
+                UNION ALL
+                -- Recursive case: generate previous intervals
+                SELECT
+                    datetime(interval_start, '-' || ? || ' minutes'),
+                    interval_start,
+                    interval_num + 1
+                FROM time_intervals
+                WHERE interval_num < ? -- Number of intervals to check (duration/interval)
+            ),
+            -- Count data points in each interval
+            interval_counts AS (
+                SELECT 
+                    t.interval_start,
+                    t.interval_end,
+                    t.interval_num,
+                    (
+                        SELECT COUNT(*) 
+                        FROM price_cache p
+                        WHERE p.symbol = ?
+                        AND p.source = ?
+                        AND datetime(p.timestamp) >= datetime(t.interval_start)
+                        AND datetime(p.timestamp) < datetime(t.interval_end)
+                    ) as point_count
+                FROM time_intervals t
+            )
+            -- Check if any interval has zero points
+            SELECT COUNT(*) as missing_intervals
+            FROM interval_counts
+            WHERE point_count = 0
+        `);
+        
+        // Calculate number of intervals
+        const numIntervals = Math.ceil(durationMinutes / intervalMinutes);
+        
+        const result = stmt.get(
+            intervalMinutes,
+            intervalMinutes,
+            numIntervals,
+            symbol.toUpperCase(),
+            source
+        ) as { missing_intervals: number };
+        
+        // If missing_intervals is 0, we have complete coverage
+        return result.missing_intervals === 0;
     },
     
     /**
@@ -668,20 +817,16 @@ export const priceCacheDb = {
     },
     
     /**
-     * Get the last cached time for a symbol
-     * @param symbol The stock symbol
-     * @param source The data source ('finnhub' or 'yahoo')
-     * @param resolution The time resolution of the data
-     * @returns The timestamp of the last cached price or null if no cache exists
+     * Get the last timestamp for a symbol in the cache
      */
-    getLastCacheTime(
+    getLastTimestamp(
         symbol: string,
         source: 'finnhub' | 'yahoo',
-        resolution: string = '1m'
+        interval: string = '1d'
     ): string | null {
         const stmt = db.prepare(`
             SELECT timestamp FROM price_cache
-            WHERE symbol = ? AND source = ? AND resolution = ?
+            WHERE symbol = ? AND source = ? AND interval = ?
             ORDER BY timestamp DESC
             LIMIT 1
         `);
@@ -689,9 +834,30 @@ export const priceCacheDb = {
         const result = stmt.get(
             symbol.toUpperCase(),
             source,
-            resolution
+            interval
         ) as { timestamp: string } | undefined;
         
         return result ? result.timestamp : null;
+    },
+    
+    /**
+     * Get all unique intervals available for a symbol
+     */
+    getAvailableIntervals(
+        symbol: string,
+        source: 'finnhub' | 'yahoo'
+    ): string[] {
+        const stmt = db.prepare(`
+            SELECT DISTINCT interval FROM price_cache
+            WHERE symbol = ? AND source = ?
+            ORDER BY interval
+        `);
+        
+        const results = stmt.all(
+            symbol.toUpperCase(),
+            source
+        ) as Array<{ interval: string }>;
+        
+        return results.map(row => row.interval);
     }
 };

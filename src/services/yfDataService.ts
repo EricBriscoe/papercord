@@ -708,16 +708,20 @@ class YfData {
             url.includes('/finance/chart')
         )) {
             // Check database cache first
-            const cachedData = priceCacheDb.getCachedPrice(
+            const cachedData = priceCacheDb.getLatestPrice(
                 symbol,
                 'yahoo',
-                resolution,
                 CACHE_MAX_AGE_MINUTES
             );
             
-            if (cachedData && cachedData.extra_data) {
+            if (cachedData) {
                 console.debug(`Using cached data for ${symbol} from database`);
-                return JSON.parse(cachedData.extra_data) as T;
+                // Since we're not storing extra_data anymore, we return a basic structure
+                return {
+                    symbol: symbol,
+                    regularMarketPrice: cachedData.price,
+                    timestamp: cachedData.timestamp
+                } as any as T;
             }
         }
         
@@ -752,12 +756,13 @@ class YfData {
                 }
                 
                 if (price !== null) {
+                    // Store the price in our new cache format
                     priceCacheDb.storePrice(
                         symbol,
                         price,
                         'yahoo',
-                        resolution,
-                        resultObj
+                        new Date(),
+                        resolution
                     );
                 }
             } catch (error) {
@@ -778,10 +783,108 @@ export const yfDataService = {
     
     /**
      * Get stock historical data
+     * @param symbol Stock ticker symbol
+     * @param periodMinutes Duration to fetch in minutes (e.g., 43200 for 30 days)
+     * @param intervalMinutes Interval between data points in minutes (e.g., 1440 for daily data)
      */
-    async getHistoricalData(symbol: string, period: string = '1d', interval: string = '1d'): Promise<any> {
+    async getHistoricalData(symbol: string, periodMinutes: number = 1440, intervalMinutes: number = 1440): Promise<any> {
         try {
-            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`;
+            const normalizedSymbol = symbol.toUpperCase();
+            
+            // Determine appropriate cache interval based on the interval minutes
+            let cacheInterval: string;
+            if (intervalMinutes <= 1) cacheInterval = '1m';
+            else if (intervalMinutes <= 5) cacheInterval = '5m';
+            else if (intervalMinutes <= 15) cacheInterval = '15m';
+            else if (intervalMinutes <= 30) cacheInterval = '30m';
+            else if (intervalMinutes <= 60) cacheInterval = '1h';
+            else cacheInterval = '1d';
+            
+            // Convert intervalMinutes and periodMinutes to Yahoo Finance API format strings
+            let interval: string, period: string;
+            
+            // Set interval string based on minutes
+            if (intervalMinutes <= 1) interval = '1m';
+            else if (intervalMinutes <= 5) interval = '5m';
+            else if (intervalMinutes <= 15) interval = '15m';
+            else if (intervalMinutes <= 30) interval = '30m';
+            else if (intervalMinutes <= 60) interval = '1h';
+            else interval = '1d';
+            
+            // Set period string based on minutes
+            if (periodMinutes <= 1440) period = '1d';
+            else if (periodMinutes <= 7200) period = '5d';
+            else if (periodMinutes <= 43200) period = '1mo';
+            else if (periodMinutes <= 129600) period = '3mo';
+            else if (periodMinutes <= 259200) period = '6mo';
+            else if (periodMinutes <= 525600) period = '1y';
+            else if (periodMinutes <= 1051200) period = '2y';
+            else period = '5y';
+            
+            // Check if we have complete coverage in the database for the requested timeframe
+            const hasCompleteData = priceCacheDb.hasCompleteCoverage(
+                normalizedSymbol,
+                'yahoo',
+                intervalMinutes,
+                periodMinutes
+            );
+            
+            if (hasCompleteData) {
+                console.debug(`Using cached historical data with complete coverage for ${normalizedSymbol}`);
+                
+                // Get cached data from database
+                const endDate = new Date();
+                const startDate = new Date(endDate.getTime() - periodMinutes * 60 * 1000);
+                
+                // Get time series data with the appropriate interval
+                const timeSeriesData = priceCacheDb.getTimeSeries(
+                    normalizedSymbol,
+                    'yahoo',
+                    cacheInterval,
+                    Math.ceil(periodMinutes / intervalMinutes) * 2, // Get more than needed
+                    startDate,
+                    endDate
+                );
+                
+                // Format data for API response compatibility
+                if (timeSeriesData && timeSeriesData.length > 0) {
+                    const timestamps = timeSeriesData.map(entry => new Date(entry.timestamp).getTime() / 1000);
+                    const prices = timeSeriesData.map(entry => entry.price);
+                    
+                    // Create response that matches Yahoo Finance API format
+                    return {
+                        chart: {
+                            result: [
+                                {
+                                    meta: {
+                                        currency: 'USD',
+                                        symbol: normalizedSymbol,
+                                        regularMarketPrice: prices[prices.length - 1],
+                                        previousClose: prices.length > 1 ? prices[prices.length - 2] : prices[0],
+                                    },
+                                    timestamp: timestamps,
+                                    indicators: {
+                                        quote: [
+                                            {
+                                                close: prices,
+                                                open: prices.map((p, i) => i > 0 ? prices[i - 1] : p),
+                                                high: prices.map(p => p * 1.005), // Approximate
+                                                low: prices.map(p => p * 0.995),  // Approximate
+                                                volume: prices.map(() => 0)  // No volume data in cache
+                                            }
+                                        ]
+                                    }
+                                }
+                            ]
+                        }
+                    };
+                }
+            } else {
+                console.debug(`Incomplete historical data for ${normalizedSymbol}, fetching from API`);
+            }
+            
+            // No adequate cache data, fetch from API
+            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(normalizedSymbol)}`;
             const params = {
                 period1: 0,
                 period2: Math.floor(Date.now() / 1000),
@@ -789,7 +892,49 @@ export const yfDataService = {
                 range: period
             };
             
-            return await this.instance.cachedGetJson(url, params, undefined, symbol, HISTORICAL_RESOLUTION);
+            const result = await this.instance.getJson(url, params);
+            
+            // Store historical data points in database cache
+            if (result &&
+                result.chart &&
+                result.chart.result && 
+                result.chart.result.length > 0) {
+                
+                const data = result.chart.result[0];
+                if (data.timestamp && data.indicators.quote[0].close) {
+                    const timestamps = data.timestamp;
+                    const prices = data.indicators.quote[0].close;
+                    
+                    // Create batch of price entries to insert
+                    const priceEntries: Array<{
+                        symbol: string;
+                        price: number;
+                        timestamp: Date;
+                        source: 'finnhub' | 'yahoo';
+                        interval: string;
+                    }> = [];
+                    for (let i = 0; i < timestamps.length; i++) {
+                        // Skip null prices
+                        if (prices[i] === null) continue;
+                        
+                        priceEntries.push({
+                            symbol: normalizedSymbol,
+                            price: prices[i],
+                            timestamp: new Date(timestamps[i] * 1000),
+                            source: 'yahoo' as 'yahoo',
+                            interval: cacheInterval
+                        });
+                    }
+                    
+                    // Store all price points in a batch operation
+                    if (priceEntries.length > 0) {
+                        priceCacheDb.storePriceBatch(priceEntries);
+                        console.debug(`Cached ${priceEntries.length} historical prices for ${normalizedSymbol}`);
+                    }
+                }
+            }
+            
+            return result;
         } catch (error) {
             console.error(`Failed to get historical data for ${symbol}:`, error);
             throw error;
@@ -801,28 +946,50 @@ export const yfDataService = {
      */
     async getQuote(symbol: string): Promise<any> {
         try {
+            const normalizedSymbol = symbol.toUpperCase();
+            
             // First check the database cache
-            const cachedData = priceCacheDb.getCachedPrice(
-                symbol,
+            const cachedData = priceCacheDb.getLatestPrice(
+                normalizedSymbol,
                 'yahoo',
-                DEFAULT_RESOLUTION,
-                CACHE_MAX_AGE_MINUTES
+                15 // 15 minutes max age
             );
             
-            if (cachedData && cachedData.extra_data) {
-                const parsedData = JSON.parse(cachedData.extra_data);
-                if (parsedData.quoteResponse?.result?.[0]) {
-                    return parsedData.quoteResponse.result[0];
-                }
+            if (cachedData) {
+                console.debug(`Using cached quote for ${normalizedSymbol} from database`);
+                
+                // Simulate a quote response with basic price data
+                return {
+                    symbol: normalizedSymbol,
+                    regularMarketPrice: cachedData.price,
+                    regularMarketTime: new Date(cachedData.timestamp).getTime() / 1000,
+                    cached: true
+                };
             }
             
             // No cache hit, fetch from API
             const url = `https://query1.finance.yahoo.com/v7/finance/quote`;
             const params = {
-                symbols: encodeURIComponent(symbol)
+                symbols: encodeURIComponent(normalizedSymbol)
             };
             
-            const response = await this.instance.cachedGetJson(url, params, undefined, symbol, DEFAULT_RESOLUTION);
+            const response = await this.instance.getJson(url, params);
+            
+            // Store in database cache if we got a valid response
+            if (response.quoteResponse?.result?.[0]?.regularMarketPrice) {
+                const quoteData = response.quoteResponse.result[0];
+                
+                priceCacheDb.storePrice(
+                    normalizedSymbol,
+                    quoteData.regularMarketPrice,
+                    'yahoo',
+                    new Date(quoteData.regularMarketTime * 1000),
+                    '1m'
+                );
+                
+                console.debug(`Cached quote for ${normalizedSymbol}`);
+            }
+            
             return response.quoteResponse?.result?.[0] || null;
         } catch (error) {
             console.error(`Failed to get quote for ${symbol}:`, error);
@@ -870,18 +1037,23 @@ export const yfDataService = {
      */
     getHistoricalPrices(symbol: string, limit: number = 30): any[] {
         try {
-            const prices = priceCacheDb.getHistoricalPrices(
+            // Use the new getTimeSeries method instead of the old getHistoricalPrices
+            const endDate = new Date();
+            const startDate = new Date(endDate.getTime() - 30 * 24 * 60 * 60 * 1000); // 30 days back
+            
+            const prices = priceCacheDb.getTimeSeries(
                 symbol,
                 'yahoo',
                 HISTORICAL_RESOLUTION,
-                limit
+                limit,
+                startDate,
+                endDate
             );
             
             return prices.map(entry => ({
                 symbol: entry.symbol,
                 price: entry.price,
-                timestamp: entry.timestamp,
-                data: entry.extra_data ? JSON.parse(entry.extra_data) : {}
+                timestamp: entry.timestamp
             }));
         } catch (error) {
             console.error(`Failed to get historical prices for ${symbol}:`, error);

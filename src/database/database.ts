@@ -92,14 +92,13 @@ db.exec(`
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         symbol TEXT NOT NULL,
         price REAL NOT NULL,
-        timestamp TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+        timestamp TEXT NOT NULL,
         source TEXT CHECK(source IN ('finnhub', 'yahoo')) NOT NULL,
-        resolution TEXT DEFAULT '1m' NOT NULL,
-        extra_data TEXT, -- JSON string for additional data (volume, high, low, etc.)
-        UNIQUE(symbol, source, resolution, timestamp)
+        interval TEXT DEFAULT '1m' NOT NULL,
+        UNIQUE(symbol, source, interval, timestamp)
     );
     
-    CREATE INDEX IF NOT EXISTS idx_price_cache_lookup ON price_cache(symbol, source, resolution, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_price_lookup ON price_cache(symbol, source, interval, timestamp);
 `);
 
 export default db;
