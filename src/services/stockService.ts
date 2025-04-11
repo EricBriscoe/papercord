@@ -22,7 +22,6 @@ if (API_KEY) {
 
 // Define cache settings
 const CACHE_MAX_AGE_MINUTES = 15; // Maximum age of cache in minutes
-const DEFAULT_RESOLUTION = '1m'; // Default resolution for price data
 
 /**
  * Stock market service
@@ -36,10 +35,9 @@ export const stockService = {
             const normalizedSymbol = symbol.toUpperCase();
             
             // Check database cache first
-            const cachedData = priceCacheDb.getCachedPrice(
+            const cachedData = priceCacheDb.getLatestPrice(
                 normalizedSymbol,
                 'finnhub',
-                DEFAULT_RESOLUTION,
                 CACHE_MAX_AGE_MINUTES
             );
             
@@ -60,7 +58,8 @@ export const stockService = {
                     normalizedSymbol,
                     dummyPrice,
                     'finnhub',
-                    DEFAULT_RESOLUTION
+                    new Date(),
+                    '1m'
                 );
                 
                 return { symbol: normalizedSymbol, price: dummyPrice };
@@ -74,18 +73,13 @@ export const stockService = {
                     }
                     
                     if (data && typeof data.c === 'number') {
-                        // Store in database cache with extra data
+                        // Store price in database cache
                         priceCacheDb.storePrice(
                             normalizedSymbol,
                             data.c,
                             'finnhub',
-                            DEFAULT_RESOLUTION,
-                            {
-                                high: data.h,
-                                low: data.l,
-                                open: data.o,
-                                previousClose: data.pc
-                            }
+                            new Date(),
+                            '1m'
                         );
                         
                         resolve({ symbol: normalizedSymbol, price: data.c });
@@ -138,7 +132,7 @@ export const stockService = {
      * Get historical prices for a symbol from cache
      */
     getHistoricalPrices(symbol: string, limit: number = 30): any[] {
-        const prices = priceCacheDb.getHistoricalPrices(
+        const prices = priceCacheDb.getTimeSeries(
             symbol,
             'finnhub',
             '1d',
@@ -148,8 +142,7 @@ export const stockService = {
         return prices.map(entry => ({
             symbol: entry.symbol,
             price: entry.price,
-            timestamp: entry.timestamp,
-            extraData: entry.extra_data ? JSON.parse(entry.extra_data) : {}
+            timestamp: entry.timestamp
         }));
     },
     

@@ -333,42 +333,99 @@ export async function getHistoricalVolatility(
     lookbackDays: number = 30
 ): Promise<number> {
     try {
-        // Import yfDataService dynamically to avoid circular dependencies
+        // Import services dynamically to avoid circular dependencies
         const { yfDataService } = await import('../services/yfDataService');
+        const { priceCacheDb } = await import('../database/operations');
         
-        // Fetch historical price data for the symbol
-        // Use "1mo" for approximate 30-day history with daily data points
-        const historyResponse = await yfDataService.getHistoricalData(symbol, '1mo', '1d');
+        const normalizedSymbol = symbol.toUpperCase();
         
-        if (!historyResponse || 
-            !historyResponse.chart || 
-            !historyResponse.chart.result || 
-            historyResponse.chart.result.length === 0) {
-            console.warn(`Failed to get historical data for ${symbol}, using default volatility`);
+        // Calculate interval and duration in minutes
+        const intervalMinutes = 1440; // Daily data (24 * 60)
+        const durationMinutes = lookbackDays * 1440; // Convert days to minutes
+        
+        // Check if we have complete coverage (at least one price point per interval)
+        // This lets the database determine if we have enough data
+        const hasCompleteData = priceCacheDb.hasCompleteCoverage(
+            normalizedSymbol,
+            'yahoo',
+            intervalMinutes,
+            durationMinutes
+        );
+        
+        let closePrices: number[] = [];
+        
+        if (hasCompleteData) {
+            // Use cached data from database directly
+            console.log(`Using cached historical data with complete coverage for volatility calculation of ${normalizedSymbol}`);
+            
+            // Calculate date range for historical data
+            const endDate = new Date();
+            const startDate = new Date(endDate.getTime() - durationMinutes * 60 * 1000);
+            
+            // Get price series from database
+            const priceData = priceCacheDb.getTimeSeries(
+                normalizedSymbol,
+                'yahoo',
+                '1d',
+                lookbackDays * 2, // Get more than needed to ensure we have enough
+                startDate,
+                endDate
+            );
+            
+            if (priceData && priceData.length > 1) {
+                closePrices = priceData.map(entry => entry.price);
+            }
+        }
+        
+        // If we don't have enough data in cache or no complete coverage, fetch from API
+        if (closePrices.length < 2) {
+            console.log(`Fetching historical data for volatility calculation of ${normalizedSymbol}`);
+            
+            const periodMinutes = lookbackDays <= 30 ? 43200 :  // ~30 days
+                                  lookbackDays <= 90 ? 129600 : // ~90 days
+                                  259200;                       // ~180 days (6 months)
+                                
+            const historyResponse = await yfDataService.getHistoricalData(
+                normalizedSymbol, 
+                periodMinutes,
+                intervalMinutes
+            );
+            
+            if (!historyResponse || 
+                !historyResponse.chart || 
+                !historyResponse.chart.result || 
+                historyResponse.chart.result.length === 0) {
+                console.warn(`Failed to get historical data for ${normalizedSymbol}, using default volatility`);
+                return DEFAULT_VOLATILITY.DEFAULT;
+            }
+            
+            // Extract close prices from the response
+            const result = historyResponse.chart.result[0];
+            closePrices = result.indicators.quote[0].close;
+        }
+        
+        if (!closePrices || closePrices.length < 2) {
+            console.warn(`Insufficient price data for ${normalizedSymbol}, using default volatility`);
             return DEFAULT_VOLATILITY.DEFAULT;
         }
         
-        // Extract close prices from the response
-        const result = historyResponse.chart.result[0];
-        const closePrices = result.indicators.quote[0].close;
+        // Filter out any null values
+        closePrices = closePrices.filter(price => price !== null && price !== undefined);
         
-        if (!closePrices || closePrices.length < 2) {
-            console.warn(`Insufficient price data for ${symbol}, using default volatility`);
+        if (closePrices.length < 2) {
+            console.warn(`Insufficient valid price data for ${normalizedSymbol}, using default volatility`);
             return DEFAULT_VOLATILITY.DEFAULT;
         }
         
         // Calculate daily returns: (price_t / price_t-1) - 1
         const returns: number[] = [];
         for (let i = 1; i < closePrices.length; i++) {
-            // Skip days with null values
-            if (closePrices[i] === null || closePrices[i-1] === null) continue;
-            
             const dailyReturn = (closePrices[i] / closePrices[i-1]) - 1;
             returns.push(dailyReturn);
         }
         
         if (returns.length === 0) {
-            console.warn(`Could not calculate returns for ${symbol}, using default volatility`);
+            console.warn(`Could not calculate returns for ${normalizedSymbol}, using default volatility`);
             return DEFAULT_VOLATILITY.DEFAULT;
         }
         
@@ -389,7 +446,7 @@ export async function getHistoricalVolatility(
         if (annualizedVol < 0.05) return 0.05;  // Minimum 5%
         if (annualizedVol > 2.0) return 2.0;    // Maximum 200%
         
-        console.log(`Calculated volatility for ${symbol}: ${(annualizedVol * 100).toFixed(2)}%`);
+        console.log(`Calculated volatility for ${normalizedSymbol}: ${(annualizedVol * 100).toFixed(2)}%`);
         return annualizedVol;
     } catch (error) {
         console.error(`Error calculating volatility for ${symbol}:`, error);
