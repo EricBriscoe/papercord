@@ -87,6 +87,19 @@ db.exec(`
         resolvedAt TEXT,
         FOREIGN KEY (userId) REFERENCES users(userId)
     );
+    
+    CREATE TABLE IF NOT EXISTS price_cache (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT NOT NULL,
+        price REAL NOT NULL,
+        timestamp TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+        source TEXT CHECK(source IN ('finnhub', 'yahoo')) NOT NULL,
+        resolution TEXT DEFAULT '1m' NOT NULL,
+        extra_data TEXT, -- JSON string for additional data (volume, high, low, etc.)
+        UNIQUE(symbol, source, resolution, timestamp)
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_price_cache_lookup ON price_cache(symbol, source, resolution, timestamp);
 `);
 
 export default db;

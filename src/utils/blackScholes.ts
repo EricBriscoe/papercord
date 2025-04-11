@@ -323,11 +323,76 @@ export function calculateTimeToExpiry(expirationDate: Date): number {
 }
 
 /**
- * Get historical volatility for a symbol (dummy implementation)
- * In a real system, this would calculate historical volatility from price data
+ * Get historical volatility for a symbol using actual historical price data
+ * @param symbol Stock ticker symbol
+ * @param lookbackDays Number of trading days to look back for calculation (default: 30)
+ * @returns Annualized volatility as a decimal (e.g., 0.30 = 30%)
  */
-export function getHistoricalVolatility(symbol: string): number {
-    // This is a dummy implementation - in a real system this would
-    // calculate historical volatility based on price movements
-    return DEFAULT_VOLATILITY.DEFAULT;
+export async function getHistoricalVolatility(
+    symbol: string, 
+    lookbackDays: number = 30
+): Promise<number> {
+    try {
+        // Import yfDataService dynamically to avoid circular dependencies
+        const { yfDataService } = await import('../services/yfDataService');
+        
+        // Fetch historical price data for the symbol
+        // Use "1mo" for approximate 30-day history with daily data points
+        const historyResponse = await yfDataService.getHistoricalData(symbol, '1mo', '1d');
+        
+        if (!historyResponse || 
+            !historyResponse.chart || 
+            !historyResponse.chart.result || 
+            historyResponse.chart.result.length === 0) {
+            console.warn(`Failed to get historical data for ${symbol}, using default volatility`);
+            return DEFAULT_VOLATILITY.DEFAULT;
+        }
+        
+        // Extract close prices from the response
+        const result = historyResponse.chart.result[0];
+        const closePrices = result.indicators.quote[0].close;
+        
+        if (!closePrices || closePrices.length < 2) {
+            console.warn(`Insufficient price data for ${symbol}, using default volatility`);
+            return DEFAULT_VOLATILITY.DEFAULT;
+        }
+        
+        // Calculate daily returns: (price_t / price_t-1) - 1
+        const returns: number[] = [];
+        for (let i = 1; i < closePrices.length; i++) {
+            // Skip days with null values
+            if (closePrices[i] === null || closePrices[i-1] === null) continue;
+            
+            const dailyReturn = (closePrices[i] / closePrices[i-1]) - 1;
+            returns.push(dailyReturn);
+        }
+        
+        if (returns.length === 0) {
+            console.warn(`Could not calculate returns for ${symbol}, using default volatility`);
+            return DEFAULT_VOLATILITY.DEFAULT;
+        }
+        
+        // Calculate average return
+        const avgReturn = returns.reduce((sum, val) => sum + val, 0) / returns.length;
+        
+        // Calculate sum of squared deviations
+        const squaredDeviations = returns.map(ret => Math.pow(ret - avgReturn, 2));
+        const sumSquaredDeviations = squaredDeviations.reduce((sum, val) => sum + val, 0);
+        
+        // Calculate standard deviation
+        const stdDev = Math.sqrt(sumSquaredDeviations / (returns.length - 1));
+        
+        // Annualize the volatility (assuming 252 trading days per year)
+        const annualizedVol = stdDev * Math.sqrt(252);
+        
+        // Cap volatility at reasonable bounds
+        if (annualizedVol < 0.05) return 0.05;  // Minimum 5%
+        if (annualizedVol > 2.0) return 2.0;    // Maximum 200%
+        
+        console.log(`Calculated volatility for ${symbol}: ${(annualizedVol * 100).toFixed(2)}%`);
+        return annualizedVol;
+    } catch (error) {
+        console.error(`Error calculating volatility for ${symbol}:`, error);
+        return DEFAULT_VOLATILITY.DEFAULT;
+    }
 }

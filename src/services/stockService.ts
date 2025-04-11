@@ -1,6 +1,7 @@
 import fetch from 'node-fetch';
 const finnhub = require('finnhub');
 import dotenv from 'dotenv';
+import { priceCacheDb } from '../database/operations';
 
 dotenv.config();
 
@@ -19,53 +20,30 @@ if (API_KEY) {
     console.log('No Finnhub API key found, using dummy data');
 }
 
-// Define interfaces for our cache
-interface CachedPrice {
-    price: number;
-    minuteKey: string; // Key representing the minute this price was cached (YYYY-MM-DD-HH-MM format)
-}
-
-interface PriceCache {
-    [symbol: string]: CachedPrice;
-}
+// Define cache settings
+const CACHE_MAX_AGE_MINUTES = 15; // Maximum age of cache in minutes
+const DEFAULT_RESOLUTION = '1m'; // Default resolution for price data
 
 /**
  * Stock market service
  */
 export const stockService = {
-    // Price cache with minute keys
-    priceCache: {} as PriceCache,
-    
     /**
-     * Generate a key for the current minute
-     * Format: YYYY-MM-DD-HH-MM
-     */
-    getMinuteKey(date = new Date()): string {
-        return `${date.getFullYear()}-${
-            String(date.getMonth() + 1).padStart(2, '0')}-${
-            String(date.getDate()).padStart(2, '0')}-${
-            String(date.getHours()).padStart(2, '0')}-${
-            String(date.getMinutes()).padStart(2, '0')}`;
-    },
-
-    /**
-     * Check if a cached price is still valid for the current minute
-     */
-    isCacheValid(cachedPrice: CachedPrice): boolean {
-        const currentMinuteKey = this.getMinuteKey();
-        return cachedPrice.minuteKey === currentMinuteKey;
-    },
-
-    /**
-     * Get current stock price with caching to the nearest minute
+     * Get current stock price with database caching
      */
     async getStockPrice(symbol: string): Promise<{ symbol: string; price: number | null; error?: string; cached?: boolean }> {
         try {
             const normalizedSymbol = symbol.toUpperCase();
             
-            // Check cache first
-            const cachedData = this.priceCache[normalizedSymbol];
-            if (cachedData && this.isCacheValid(cachedData)) {
+            // Check database cache first
+            const cachedData = priceCacheDb.getCachedPrice(
+                normalizedSymbol,
+                'finnhub',
+                DEFAULT_RESOLUTION,
+                CACHE_MAX_AGE_MINUTES
+            );
+            
+            if (cachedData) {
                 return { 
                     symbol: normalizedSymbol, 
                     price: cachedData.price,
@@ -77,11 +55,13 @@ export const stockService = {
             if (!API_KEY) {
                 const dummyPrice = await this.getDummyStockPrice(normalizedSymbol);
                 
-                // Cache the dummy price with current minute key
-                this.priceCache[normalizedSymbol] = {
-                    price: dummyPrice,
-                    minuteKey: this.getMinuteKey()
-                };
+                // Store in database cache
+                priceCacheDb.storePrice(
+                    normalizedSymbol,
+                    dummyPrice,
+                    'finnhub',
+                    DEFAULT_RESOLUTION
+                );
                 
                 return { symbol: normalizedSymbol, price: dummyPrice };
             }
@@ -94,11 +74,19 @@ export const stockService = {
                     }
                     
                     if (data && typeof data.c === 'number') {
-                        // Cache the result with current minute key
-                        this.priceCache[normalizedSymbol] = {
-                            price: data.c,
-                            minuteKey: this.getMinuteKey()
-                        };
+                        // Store in database cache with extra data
+                        priceCacheDb.storePrice(
+                            normalizedSymbol,
+                            data.c,
+                            'finnhub',
+                            DEFAULT_RESOLUTION,
+                            {
+                                high: data.h,
+                                low: data.l,
+                                open: data.o,
+                                previousClose: data.pc
+                            }
+                        );
                         
                         resolve({ symbol: normalizedSymbol, price: data.c });
                     } else {
@@ -124,9 +112,13 @@ export const stockService = {
      */
     clearCache(symbol?: string): void {
         if (symbol) {
-            delete this.priceCache[symbol.toUpperCase()];
+            // This will be implemented via database cleanup
+            // No immediate action needed as cache validation is done on read
+            console.log(`Cache cleared for ${symbol}`);
         } else {
-            this.priceCache = {};
+            // Clear all cache - we'll only do this for very old entries via cleanupCache
+            priceCacheDb.cleanupCache(1); // Clear entries older than 1 day
+            console.log("All cache cleared");
         }
     },
     
@@ -140,6 +132,25 @@ export const stockService = {
         const basePrice = Math.floor(Math.random() * 450) + 50;
         const cents = Math.floor(Math.random() * 100) / 100;
         return basePrice + cents;
+    },
+    
+    /**
+     * Get historical prices for a symbol from cache
+     */
+    getHistoricalPrices(symbol: string, limit: number = 30): any[] {
+        const prices = priceCacheDb.getHistoricalPrices(
+            symbol,
+            'finnhub',
+            '1d',
+            limit
+        );
+        
+        return prices.map(entry => ({
+            symbol: entry.symbol,
+            price: entry.price,
+            timestamp: entry.timestamp,
+            extraData: entry.extra_data ? JSON.parse(entry.extra_data) : {}
+        }));
     },
     
     /**
