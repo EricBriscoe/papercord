@@ -65,7 +65,6 @@
    ```
    DISCORD_TOKEN=your_discord_bot_token_here
    FINNHUB_API_KEY=your_finnhub_api_key_here
-   PRICE_CACHE_EXPIRATION_SECONDS=60
    ```
 4. Build the project:
    ```
@@ -88,7 +87,6 @@ docker run -d \
   --name papercord \
   -e DISCORD_TOKEN=your_discord_bot_token \
   -e FINNHUB_API_KEY=your_finnhub_api_key \
-  -e PRICE_CACHE_EXPIRATION_SECONDS=60 \
   -v /path/to/data:/app/data \
   ghcr.io/ericbriscoe/papercord:latest
 ```
