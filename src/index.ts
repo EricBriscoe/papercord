@@ -11,6 +11,9 @@ import { tradeOptionCommand } from './commands/trade_option';
 import { optionsPortfolioCommand } from './commands/options_portfolio';
 import { closeOptionCommand } from './commands/close_option';
 import { leaderboardCommand } from './commands/leaderboard';
+import { cryptoBuyCommand } from './commands/crypto_buy';
+import { cryptoSellCommand } from './commands/crypto_sell';
+import { cryptoPriceCommand } from './commands/crypto_price';
 import { Command } from './models/command';
 import { optionsService } from './services/optionsService';
 import { optionsDb } from './database/operations';
@@ -44,6 +47,10 @@ const commands = new Collection<string, Command>();
     tradeOptionCommand,
     optionsPortfolioCommand,
     closeOptionCommand,
+    // Crypto trading commands
+    cryptoBuyCommand,
+    cryptoSellCommand,
+    cryptoPriceCommand,
     // Community commands
     leaderboardCommand
 ].forEach(command => {

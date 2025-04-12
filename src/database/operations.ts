@@ -72,6 +72,28 @@ interface MarginCall {
     resolvedAt?: string;
 }
 
+interface CryptoPosition {
+    id?: number;
+    userId: string;
+    coinId: string;
+    symbol: string;
+    name: string;
+    quantity: number;
+    averagePurchasePrice: number;
+}
+
+interface CryptoTransaction {
+    id?: number;
+    userId: string;
+    coinId: string;
+    symbol: string;
+    name: string;
+    quantity: number;
+    price: number;
+    type: 'buy' | 'sell';
+    timestamp?: string;
+}
+
 /**
  * User database operations
  */
@@ -543,7 +565,7 @@ export interface PriceCache {
     symbol: string;
     price: number;
     timestamp: string;
-    source: 'finnhub' | 'yahoo';
+    source: 'finnhub' | 'yahoo' | 'coingecko';
     interval: string;
 }
 
@@ -554,7 +576,7 @@ export const priceCacheDb = {
     storePrice(
         symbol: string,
         price: number,
-        source: 'finnhub' | 'yahoo',
+        source: 'finnhub' | 'yahoo' | 'coingecko',
         timestamp: Date = new Date(),
         interval: string = '1m'
     ): void {
@@ -583,7 +605,7 @@ export const priceCacheDb = {
         symbol: string;
         price: number;
         timestamp: Date;
-        source: 'finnhub' | 'yahoo';
+        source: 'finnhub' | 'yahoo' | 'coingecko';
         interval: string;
     }>): void {
         const stmt = db.prepare(`
@@ -654,7 +676,7 @@ export const priceCacheDb = {
      */
     getLatestPrice(
         symbol: string,
-        source: 'finnhub' | 'yahoo',
+        source: 'finnhub' | 'yahoo' | 'coingecko',
         maxAgeMinutes: number = 15
     ): PriceCache | undefined {
         const stmt = db.prepare(`
@@ -677,7 +699,7 @@ export const priceCacheDb = {
      */
     getTimeSeries(
         symbol: string,
-        source: 'finnhub' | 'yahoo',
+        source: 'finnhub' | 'yahoo' | 'coingecko',
         interval: string = '1d',
         limit: number = 30,
         startDate?: Date,
@@ -716,7 +738,7 @@ export const priceCacheDb = {
      */
     hasAdequateHistoricalData(
         symbol: string,
-        source: 'finnhub' | 'yahoo',
+        source: 'finnhub' | 'yahoo' | 'coingecko',
         interval: string = '1d', 
         minDataPoints: number = 20,
         maxAgeInDays: number = 30
@@ -748,7 +770,7 @@ export const priceCacheDb = {
      */
     hasCompleteCoverage(
         symbol: string,
-        source: 'finnhub' | 'yahoo',
+        source: 'finnhub' | 'yahoo' | 'coingecko',
         intervalMinutes: number = 1440, // Default to daily (24 hours * 60 minutes)
         durationMinutes: number = 43200 // Default to 30 days
     ): boolean {
@@ -829,7 +851,7 @@ export const priceCacheDb = {
      */
     getLastTimestamp(
         symbol: string,
-        source: 'finnhub' | 'yahoo',
+        source: 'finnhub' | 'yahoo' | 'coingecko',
         interval: string = '1d'
     ): string | null {
         const stmt = db.prepare(`
@@ -853,7 +875,7 @@ export const priceCacheDb = {
      */
     getAvailableIntervals(
         symbol: string,
-        source: 'finnhub' | 'yahoo'
+        source: 'finnhub' | 'yahoo' | 'coingecko'
     ): string[] {
         const stmt = db.prepare(`
             SELECT DISTINCT interval FROM price_cache
@@ -867,5 +889,87 @@ export const priceCacheDb = {
         ) as Array<{ interval: string }>;
         
         return results.map(row => row.interval);
+    }
+};
+
+/**
+ * Cryptocurrency portfolio database operations
+ */
+export const cryptoPortfolioDb = {
+    /**
+     * Get user's cryptocurrency portfolio
+     */
+    getUserPortfolio(userId: string): CryptoPosition[] {
+        const stmt = db.prepare(`
+            SELECT id, userId, coinId, symbol, name, quantity, averagePurchasePrice 
+            FROM crypto_portfolio 
+            WHERE userId = ? AND quantity > 0
+        `);
+        return stmt.all(userId) as CryptoPosition[];
+    },
+    
+    /**
+     * Get user's position for a specific cryptocurrency
+     */
+    getUserPosition(userId: string, coinId: string): CryptoPosition | undefined {
+        const stmt = db.prepare(`
+            SELECT id, userId, coinId, symbol, name, quantity, averagePurchasePrice 
+            FROM crypto_portfolio 
+            WHERE userId = ? AND coinId = ?
+        `);
+        return stmt.get(userId, coinId) as CryptoPosition | undefined;
+    },
+    
+    /**
+     * Add or update a position in user's crypto portfolio
+     */
+    updatePosition(userId: string, coinId: string, symbol: string, name: string, quantity: number, averagePrice: number): void {
+        const stmt = db.prepare(`
+            INSERT INTO crypto_portfolio (userId, coinId, symbol, name, quantity, averagePurchasePrice)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(userId, coinId) DO UPDATE
+            SET quantity = ?, averagePurchasePrice = ?, symbol = ?, name = ?
+        `);
+        stmt.run(
+            userId, 
+            coinId, 
+            symbol.toUpperCase(), 
+            name, 
+            quantity, 
+            averagePrice, 
+            quantity, 
+            averagePrice,
+            symbol.toUpperCase(),
+            name
+        );
+    }
+};
+
+/**
+ * Cryptocurrency transaction database operations
+ */
+export const cryptoTransactionDb = {
+    /**
+     * Add a buy/sell transaction to history
+     */
+    addTransaction(userId: string, coinId: string, symbol: string, name: string, quantity: number, price: number, type: 'buy' | 'sell'): void {
+        const stmt = db.prepare(`
+            INSERT INTO crypto_transactions (userId, coinId, symbol, name, quantity, price, type)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+        stmt.run(userId, coinId, symbol.toUpperCase(), name, quantity, price, type);
+    },
+    
+    /**
+     * Get transaction history for a user
+     */
+    getUserTransactions(userId: string, limit = 10): CryptoTransaction[] {
+        const stmt = db.prepare(`
+            SELECT * FROM crypto_transactions
+            WHERE userId = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        `);
+        return stmt.all(userId, limit) as CryptoTransaction[];
     }
 };

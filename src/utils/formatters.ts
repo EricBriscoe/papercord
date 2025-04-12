@@ -56,3 +56,13 @@ export function encodeUrlWithPlus(url: string): string {
     return url;
   }
 }
+
+/**
+ * Format a number with specified decimal places
+ */
+export function formatNumber(value: number, decimals: number = 2): string {
+  return new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  }).format(value);
+}
