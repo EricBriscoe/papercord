@@ -1,0 +1,682 @@
+import fetch from 'node-fetch';
+import dotenv from 'dotenv';
+import { priceCacheDb } from '../database/operations';
+import fs from 'fs';
+import path from 'path';
+
+dotenv.config();
+
+// API key should be set in .env file as COINGECKO_API_KEY
+const API_KEY = process.env.COINGECKO_API_KEY || 'CG-UPYXQ5GgW2gga94YsbVXqEnc'; // Default to demo key
+
+// Define base URL for CoinGecko API
+const BASE_URL = 'https://api.coingecko.com/api/v3';
+
+// Define cache settings
+const CACHE_MAX_AGE_MINUTES = 15; // Maximum age of cache in minutes
+const GLOBAL_CACHE_UPDATE_INTERVAL_HOURS = 6; // Update the global cache every 6 hours
+const TOP_COINS_TO_CACHE = 250; // Number of top coins to cache in the global cache
+
+// Global in-memory cache
+interface GlobalCacheData {
+    lastUpdated: Date;
+    prices: { [id: string]: number };
+    nextUpdateTime: Date;
+    callCount: number;
+    dailyCallCount: number;
+    dailyCountResetDate: Date;
+}
+
+// Initialize global cache
+const globalCache: GlobalCacheData = {
+    lastUpdated: new Date(0), // Set to epoch time initially
+    prices: {},
+    nextUpdateTime: new Date(0),
+    callCount: 0,
+    dailyCallCount: 0,
+    dailyCountResetDate: new Date()
+};
+
+// Cache file paths
+const CACHE_DIR = path.join(__dirname, '../../data/cache');
+const CACHE_FILE = path.join(CACHE_DIR, 'coingecko-cache.json');
+
+// Log API key status for debugging (without revealing the full key)
+if (API_KEY) {
+    console.log(`CoinGecko API key found (starts with: ${API_KEY.substring(0, 3)}...)`);
+} else {
+    console.log('No CoinGecko API key found, using dummy data');
+}
+
+// Define types for coin data
+interface Coin {
+    id: string;
+    symbol: string;
+    name: string;
+}
+
+interface CoinMarketData {
+    id: string;
+    symbol: string;
+    name: string;
+    current_price: number;
+    market_cap: number;
+    total_volume: number;
+    price_change_percentage_24h: number;
+    image: string;
+    last_updated: string;
+}
+
+// Ensure the cache directory exists
+try {
+    if (!fs.existsSync(CACHE_DIR)) {
+        fs.mkdirSync(CACHE_DIR, { recursive: true });
+    }
+} catch (err) {
+    console.error('Error creating cache directory:', err);
+}
+
+// Load the cache from disk if it exists
+try {
+    if (fs.existsSync(CACHE_FILE)) {
+        const cacheData = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
+        
+        globalCache.lastUpdated = new Date(cacheData.lastUpdated || 0);
+        globalCache.prices = cacheData.prices || {};
+        globalCache.nextUpdateTime = new Date(cacheData.nextUpdateTime || 0);
+        globalCache.callCount = cacheData.callCount || 0;
+        globalCache.dailyCallCount = cacheData.dailyCallCount || 0;
+        globalCache.dailyCountResetDate = new Date(cacheData.dailyCountResetDate || new Date());
+        
+        console.log(`Loaded CoinGecko cache with ${Object.keys(globalCache.prices).length} coins. Last updated: ${globalCache.lastUpdated}`);
+    }
+} catch (err) {
+    console.error('Error loading CoinGecko cache file:', err);
+}
+
+// Function to save the cache to disk
+function saveGlobalCache() {
+    try {
+        fs.writeFileSync(CACHE_FILE, JSON.stringify({
+            lastUpdated: globalCache.lastUpdated,
+            prices: globalCache.prices,
+            nextUpdateTime: globalCache.nextUpdateTime,
+            callCount: globalCache.callCount,
+            dailyCallCount: globalCache.dailyCallCount,
+            dailyCountResetDate: globalCache.dailyCountResetDate
+        }, null, 2));
+    } catch (err) {
+        console.error('Error saving CoinGecko cache file:', err);
+    }
+}
+
+// Function to update API call counts
+function updateApiCallCount() {
+    // Reset daily count if it's a new day
+    const now = new Date();
+    if (now.getDate() !== globalCache.dailyCountResetDate.getDate() ||
+        now.getMonth() !== globalCache.dailyCountResetDate.getMonth() ||
+        now.getFullYear() !== globalCache.dailyCountResetDate.getFullYear()) {
+        globalCache.dailyCallCount = 0;
+        globalCache.dailyCountResetDate = now;
+    }
+    
+    globalCache.callCount++;
+    globalCache.dailyCallCount++;
+    
+    // Save updated counts
+    saveGlobalCache();
+    
+    // Log warning if approaching API limit
+    if (globalCache.dailyCallCount > 300) {
+        console.warn(`CoinGecko API daily call count: ${globalCache.dailyCallCount} - approaching monthly limit of 10,000`);
+    }
+}
+
+/**
+ * CoinGecko service for cryptocurrency data
+ */
+export const coinGeckoService = {
+    /**
+     * Get the list of all coins from CoinGecko
+     */
+    async getCoinsList(): Promise<Coin[]> {
+        try {
+            const response = await fetch(`${BASE_URL}/coins/list`, {
+                method: 'GET',
+                headers: {
+                    'accept': 'application/json',
+                    'x-cg-demo-api-key': API_KEY
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error(`Error fetching coins list: ${response.status} ${response.statusText}`);
+            }
+
+            updateApiCallCount();
+            const data = await response.json() as Coin[];
+            return data;
+        } catch (error) {
+            console.error('Failed to fetch coins list:', error);
+            return [];
+        }
+    },
+
+    /**
+     * Fetch and update the global price cache with top cryptocurrencies
+     */
+    async updateGlobalPriceCache(): Promise<void> {
+        const now = new Date();
+        
+        // Skip update if we've updated recently
+        if (globalCache.nextUpdateTime > now) {
+            return;
+        }
+        
+        console.log('Updating global CoinGecko price cache...');
+        
+        try {
+            // Fetch top coins (in batches to avoid rate limits)
+            const pageSize = 50;
+            const pagesToFetch = Math.ceil(TOP_COINS_TO_CACHE / pageSize);
+            const allCoins: CoinMarketData[] = [];
+            
+            for (let page = 1; page <= pagesToFetch; page++) {
+                const response = await fetch(
+                    `${BASE_URL}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=${pageSize}&page=${page}&sparkline=false`,
+                    {
+                        method: 'GET',
+                        headers: {
+                            'accept': 'application/json',
+                            'x-cg-demo-api-key': API_KEY
+                        }
+                    }
+                );
+
+                if (!response.ok) {
+                    throw new Error(`Error fetching top coins: ${response.status} ${response.statusText}`);
+                }
+
+                updateApiCallCount();
+                const data = await response.json() as CoinMarketData[];
+                allCoins.push(...data);
+                
+                // Add slight delay to avoid rate limiting
+                if (page < pagesToFetch) {
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+            }
+            
+            // Update the cache with fetched prices
+            for (const coin of allCoins) {
+                globalCache.prices[coin.id] = coin.current_price;
+                
+                // Also store in the database cache
+                priceCacheDb.storePrice(
+                    coin.id,
+                    coin.current_price,
+                    'coingecko',
+                    new Date(coin.last_updated || now),
+                    '1m'
+                );
+            }
+            
+            // Update cache timestamps
+            globalCache.lastUpdated = now;
+            globalCache.nextUpdateTime = new Date(now.getTime() + GLOBAL_CACHE_UPDATE_INTERVAL_HOURS * 60 * 60 * 1000);
+            
+            // Save to disk
+            saveGlobalCache();
+            
+            console.log(`Updated global price cache with ${allCoins.length} coins`);
+        } catch (error) {
+            console.error('Error updating global price cache:', error);
+        }
+    },
+    
+    /**
+     * Get current price for a cryptocurrency with efficient caching
+     */
+    async getCoinPrice(coinId: string): Promise<{ id: string; symbol: string; price: number | null; error?: string; cached?: boolean }> {
+        try {
+            // Check if global cache needs updating
+            await this.updateGlobalPriceCache();
+            
+            // Check global memory cache first
+            if (globalCache.prices[coinId] !== undefined) {
+                return { 
+                    id: coinId, 
+                    symbol: coinId,
+                    price: globalCache.prices[coinId],
+                    cached: true
+                };
+            }
+            
+            // Check database cache next
+            const cachedData = priceCacheDb.getLatestPrice(
+                coinId,
+                'coingecko',
+                CACHE_MAX_AGE_MINUTES
+            );
+            
+            if (cachedData) {
+                // Update global cache with this value
+                globalCache.prices[coinId] = cachedData.price;
+                
+                return { 
+                    id: coinId, 
+                    symbol: coinId,
+                    price: cachedData.price,
+                    cached: true
+                };
+            }
+            
+            // If not in global cache or DB, we need to fetch it specifically
+            const response = await fetch(`${BASE_URL}/simple/price?ids=${coinId}&vs_currencies=usd`, {
+                method: 'GET',
+                headers: {
+                    'accept': 'application/json',
+                    'x-cg-demo-api-key': API_KEY
+                }
+            });
+
+            updateApiCallCount();
+
+            if (!response.ok) {
+                return {
+                    id: coinId,
+                    symbol: coinId,
+                    price: null,
+                    error: `Error fetching price: ${response.status} ${response.statusText}`
+                };
+            }
+
+            const data = await response.json();
+            
+            if (!data[coinId] || data[coinId].usd === undefined) {
+                return {
+                    id: coinId,
+                    symbol: coinId,
+                    price: null,
+                    error: 'No price data available'
+                };
+            }
+            
+            const price = data[coinId].usd;
+            
+            // Update global cache
+            globalCache.prices[coinId] = price;
+            saveGlobalCache();
+            
+            // Store in database cache
+            priceCacheDb.storePrice(
+                coinId,
+                price,
+                'coingecko',
+                new Date(),
+                '1m'
+            );
+            
+            return { id: coinId, symbol: coinId, price };
+        } catch (error) {
+            return { 
+                id: coinId, 
+                symbol: coinId, 
+                price: null, 
+                error: error instanceof Error ? error.message : 'Unknown error' 
+            };
+        }
+    },
+    
+    /**
+     * Get current price for multiple cryptocurrencies at once with efficient caching
+     */
+    async getMultipleCoinsPrice(coinIds: string[]): Promise<{ [id: string]: number | null }> {
+        try {
+            // Check if global cache needs updating
+            await this.updateGlobalPriceCache();
+            
+            // Initialize result with all nulls
+            const result: { [id: string]: number | null } = {};
+            coinIds.forEach(id => { result[id] = null; });
+            
+            // First look up all IDs in the global cache
+            const missingIds: string[] = [];
+            
+            for (const coinId of coinIds) {
+                if (globalCache.prices[coinId] !== undefined) {
+                    result[coinId] = globalCache.prices[coinId];
+                } else {
+                    // Check DB cache next
+                    const cachedData = priceCacheDb.getLatestPrice(
+                        coinId,
+                        'coingecko',
+                        CACHE_MAX_AGE_MINUTES
+                    );
+                    
+                    if (cachedData) {
+                        result[coinId] = cachedData.price;
+                        // Update global cache with this value
+                        globalCache.prices[coinId] = cachedData.price;
+                    } else {
+                        missingIds.push(coinId);
+                    }
+                }
+            }
+            
+            // If we found all coins in cache, return early
+            if (missingIds.length === 0) {
+                return result;
+            }
+            
+            // Fetch the missing coins from CoinGecko
+            const idsParam = missingIds.join(',');
+            const response = await fetch(`${BASE_URL}/simple/price?ids=${idsParam}&vs_currencies=usd`, {
+                method: 'GET',
+                headers: {
+                    'accept': 'application/json',
+                    'x-cg-demo-api-key': API_KEY
+                }
+            });
+
+            updateApiCallCount();
+
+            if (!response.ok) {
+                console.error(`Error fetching prices: ${response.status} ${response.statusText}`);
+                return result; // Return what we have from cache
+            }
+
+            const data = await response.json();
+            
+            // Update results, global cache and DB cache
+            const now = new Date();
+            const priceEntries: Array<{
+                symbol: string;
+                price: number;
+                timestamp: Date;
+                source: 'finnhub' | 'yahoo' | 'coingecko';
+                interval: string;
+            }> = [];
+            
+            for (const coinId of missingIds) {
+                if (data[coinId] && data[coinId].usd !== undefined) {
+                    const price = data[coinId].usd;
+                    result[coinId] = price;
+                    
+                    // Update global cache
+                    globalCache.prices[coinId] = price;
+                    
+                    // Add to batch for DB cache
+                    priceEntries.push({
+                        symbol: coinId,
+                        price: price,
+                        timestamp: now,
+                        source: 'coingecko',
+                        interval: '1m'
+                    });
+                }
+            }
+            
+            // Save global cache to disk
+            saveGlobalCache();
+            
+            // Store batch in database cache
+            if (priceEntries.length > 0) {
+                priceCacheDb.storePriceBatch(priceEntries);
+            }
+            
+            return result;
+        } catch (error) {
+            console.error('Failed to fetch multiple coin prices:', error);
+            return coinIds.reduce((acc, coinId) => {
+                // Return any prices we may have from cache despite the error
+                acc[coinId] = globalCache.prices[coinId] ?? null;
+                return acc;
+            }, {} as { [id: string]: number | null });
+        }
+    },
+    
+    /**
+     * Get market data for top cryptocurrencies
+     */
+    async getTopCoins(limit: number = 50, page: number = 1): Promise<CoinMarketData[]> {
+        try {
+            // Check if global cache needs updating
+            await this.updateGlobalPriceCache();
+            
+            const response = await fetch(
+                `${BASE_URL}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=${limit}&page=${page}&sparkline=false`,
+                {
+                    method: 'GET',
+                    headers: {
+                        'accept': 'application/json',
+                        'x-cg-demo-api-key': API_KEY
+                    }
+                }
+            );
+
+            updateApiCallCount();
+
+            if (!response.ok) {
+                throw new Error(`Error fetching top coins: ${response.status} ${response.statusText}`);
+            }
+
+            const data = await response.json() as CoinMarketData[];
+            
+            // Update caches with this data
+            const now = new Date();
+            const priceEntries: Array<{
+                symbol: string;
+                price: number;
+                timestamp: Date;
+                source: 'finnhub' | 'yahoo' | 'coingecko';
+                interval: string;
+            }> = [];
+            
+            for (const coin of data) {
+                // Update global cache
+                globalCache.prices[coin.id] = coin.current_price;
+                
+                // Add to batch for DB cache
+                priceEntries.push({
+                    symbol: coin.id,
+                    price: coin.current_price,
+                    timestamp: new Date(coin.last_updated || now),
+                    source: 'coingecko',
+                    interval: '1m'
+                });
+            }
+            
+            // Save global cache
+            saveGlobalCache();
+            
+            // Store batch in database
+            if (priceEntries.length > 0) {
+                priceCacheDb.storePriceBatch(priceEntries);
+            }
+            
+            return data;
+        } catch (error) {
+            console.error('Failed to fetch top coins:', error);
+            return [];
+        }
+    },
+    
+    /**
+     * Search for coins by name or symbol
+     */
+    async searchCoins(query: string): Promise<Coin[]> {
+        try {
+            // First get all coins
+            const allCoins = await this.getCoinsList();
+            
+            // Filter by query
+            const normalizedQuery = query.toLowerCase();
+            const filteredCoins = allCoins.filter(coin => 
+                coin.id.toLowerCase().includes(normalizedQuery) || 
+                coin.symbol.toLowerCase().includes(normalizedQuery) || 
+                coin.name.toLowerCase().includes(normalizedQuery)
+            );
+            
+            // Limit to 25 results to avoid overwhelming the user
+            return filteredCoins.slice(0, 25);
+        } catch (error) {
+            console.error('Error searching for coins:', error);
+            return [];
+        }
+    },
+    
+    /**
+     * Get historical price data for a coin
+     */
+    async getHistoricalPrices(coinId: string, days: number = 30): Promise<{prices: [number, number][]}> {
+        try {
+            const response = await fetch(
+                `${BASE_URL}/coins/${coinId}/market_chart?vs_currency=usd&days=${days}&interval=daily`,
+                {
+                    method: 'GET',
+                    headers: {
+                        'accept': 'application/json',
+                        'x-cg-demo-api-key': API_KEY
+                    }
+                }
+            );
+
+            updateApiCallCount();
+
+            if (!response.ok) {
+                throw new Error(`Error fetching historical data: ${response.status} ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            
+            // Store historical data in cache
+            if (data.prices && Array.isArray(data.prices)) {
+                const priceEntries: Array<{
+                    symbol: string;
+                    price: number;
+                    timestamp: Date;
+                    source: 'finnhub' | 'yahoo' | 'coingecko';
+                    interval: string;
+                }> = data.prices.map((entry: [number, number]) => ({
+                    symbol: coinId,
+                    price: entry[1],
+                    timestamp: new Date(entry[0]),
+                    source: 'coingecko',
+                    interval: '1d'
+                }));
+                
+                if (priceEntries.length > 0) {
+                    priceCacheDb.storePriceBatch(priceEntries);
+                }
+            }
+            
+            return data;
+        } catch (error) {
+            console.error(`Failed to fetch historical prices for ${coinId}:`, error);
+            return { prices: [] };
+        }
+    },
+    
+    /**
+     * Get detailed information for a specific coin
+     */
+    async getCoinDetails(coinId: string): Promise<any> {
+        try {
+            const response = await fetch(`${BASE_URL}/coins/${coinId}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false`, {
+                method: 'GET',
+                headers: {
+                    'accept': 'application/json',
+                    'x-cg-demo-api-key': API_KEY
+                }
+            });
+
+            updateApiCallCount();
+
+            if (!response.ok) {
+                throw new Error(`Error fetching coin details: ${response.status} ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            
+            // If the data includes current price, update the cache
+            if (data.market_data?.current_price?.usd) {
+                const price = data.market_data.current_price.usd;
+                
+                // Update global cache
+                globalCache.prices[coinId] = price;
+                saveGlobalCache();
+                
+                // Update DB cache
+                priceCacheDb.storePrice(
+                    coinId,
+                    price,
+                    'coingecko',
+                    new Date(),
+                    '1m'
+                );
+            }
+            
+            return data;
+        } catch (error) {
+            console.error(`Failed to fetch details for ${coinId}:`, error);
+            throw error;
+        }
+    },
+    
+    /**
+     * Get API call statistics
+     */
+    getApiCallStats(): { totalCalls: number; dailyCalls: number; dailyResetDate: Date } {
+        return {
+            totalCalls: globalCache.callCount,
+            dailyCalls: globalCache.dailyCallCount,
+            dailyResetDate: globalCache.dailyCountResetDate
+        };
+    },
+    
+    /**
+     * Manually trigger a cache update
+     */
+    async forceUpdateCache(): Promise<void> {
+        globalCache.nextUpdateTime = new Date(0); // Set to epoch time to force update
+        await this.updateGlobalPriceCache();
+    },
+    
+    /**
+     * Clear the price cache for a specific coin or all coins
+     */
+    clearCache(coinId?: string): void {
+        if (coinId) {
+            // Clear specific coin from global cache
+            delete globalCache.prices[coinId];
+            saveGlobalCache();
+            
+            // No immediate action needed for DB cache as validation is done on read
+            console.log(`Cache cleared for ${coinId}`);
+        } else {
+            // Clear all cache from memory
+            globalCache.prices = {};
+            globalCache.lastUpdated = new Date(0);
+            globalCache.nextUpdateTime = new Date(0);
+            saveGlobalCache();
+            
+            // Clear old DB entries
+            priceCacheDb.cleanupCache(1); // Clear entries older than 1 day
+            console.log("All CoinGecko cache cleared");
+        }
+    },
+};
+
+// Initialize the global cache when the module loads
+coinGeckoService.updateGlobalPriceCache().catch(err => {
+    console.error('Failed to initialize global cache:', err);
+});
+
+// Set up a recurring job to update the cache
+setInterval(() => {
+    coinGeckoService.updateGlobalPriceCache().catch(err => {
+        console.error('Failed to update global cache in scheduled task:', err);
+    });
+}, GLOBAL_CACHE_UPDATE_INTERVAL_HOURS * 60 * 60 * 1000 / 2); // Half the interval time to ensure we don't miss updates

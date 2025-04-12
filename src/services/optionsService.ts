@@ -1329,5 +1329,81 @@ export const optionsService = {
         const formattedStrike = (strikePrice * 1000).toFixed(0).padStart(8, '0');
         
         return `${symbol}${year}${month}${day}${optionTypeChar}${formattedStrike}`;
+    },
+
+    /**
+     * Update an option position's status and details
+     * @param positionId ID of the position to update
+     * @param status New status for the position ('open', 'closed', 'expired', 'exercised', 'liquidated')
+     * @param profitLoss Realized profit/loss from the position (if applicable)
+     * @return Updated position or null if not found
+     */
+    async updateOptionPosition(
+        positionId: number,
+        status: 'open' | 'closed' | 'expired' | 'exercised' | 'liquidated',
+        profitLoss?: number
+    ): Promise<OptionPosition | null> {
+        try {
+            // Get current position data
+            const position = optionsDb.getPositionById(positionId);
+            if (!position) {
+                return null;
+            }
+            
+            // Update position status
+            optionsDb.updatePositionStatus(positionId, status);
+            
+            // If profit/loss is provided and we have a user ID
+            if (profitLoss !== undefined && position.userId) {
+                // Update user's cash balance with the profit/loss
+                const userBalance = userDb.getCashBalance(position.userId);
+                userDb.updateCashBalance(position.userId, userBalance + profitLoss);
+                
+                // Map status to transaction type expected by addTransaction
+                let transactionType: 'open' | 'close' | 'exercise' | 'expire' | 'liquidate';
+                switch(status) {
+                    case 'open':
+                        transactionType = 'open';
+                        break;
+                    case 'closed':
+                        transactionType = 'close';
+                        break;
+                    case 'exercised':
+                        transactionType = 'exercise';
+                        break;
+                    case 'expired':
+                        transactionType = 'expire';
+                        break;
+                    case 'liquidated':
+                        transactionType = 'liquidate';
+                        break;
+                    default:
+                        transactionType = 'close'; // Default fallback
+                }
+                
+                // Record profit/loss as a transaction
+                optionsDb.addTransaction(
+                    position.userId,
+                    position.symbol,
+                    position.optionType,
+                    position.quantity,
+                    position.strikePrice,
+                    position.expirationDate,
+                    position.purchasePrice, // Use the purchase price for reference
+                    position.position,
+                    transactionType, // Use the mapped transaction type
+                    profitLoss,
+                    position.marginRequired,
+                    position.isSecured
+                );
+            }
+            
+            // Return the updated position or null
+            const updatedPosition = optionsDb.getPositionById(positionId);
+            return updatedPosition || null;
+        } catch (error) {
+            console.error('Update option position error:', error);
+            return null;
+        }
     }
 };

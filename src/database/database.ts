@@ -14,11 +14,68 @@ const db = new Database(path.join(dbDir, 'paper-trading.db'));
 // Enable foreign keys
 db.pragma('foreign_keys = ON');
 
+// Function to update existing schemas when needed
+function updateDatabaseSchema() {
+    console.log('Checking for schema updates...');
+    
+    try {
+        // Check if we need to update the price_cache table's source constraint
+        const sourceConstraint = db.prepare(`
+            SELECT sql FROM sqlite_master 
+            WHERE type='table' AND name='price_cache'
+        `).get() as { sql: string } | undefined;
+        
+        if (sourceConstraint && sourceConstraint.sql && 
+            sourceConstraint.sql.includes("source IN ('finnhub', 'yahoo')") && 
+            !sourceConstraint.sql.includes("'coingecko'")) {
+            
+            console.log('Updating price_cache table to include coingecko source...');
+            
+            // We need to recreate the table with the updated constraint
+            // SQLite doesn't allow direct ALTER of CHECK constraints
+            
+            // 1. First rename the existing table
+            db.exec('ALTER TABLE price_cache RENAME TO price_cache_old');
+            
+            // 2. Create new table with updated constraint
+            db.exec(`
+                CREATE TABLE price_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    source TEXT CHECK(source IN ('finnhub', 'yahoo', 'coingecko')) NOT NULL,
+                    interval TEXT DEFAULT '1m' NOT NULL,
+                    UNIQUE(symbol, source, interval, timestamp)
+                )
+            `);
+            
+            // 3. Copy data from old table to new one
+            db.exec('INSERT INTO price_cache SELECT * FROM price_cache_old');
+            
+            // 4. Drop the old table
+            db.exec('DROP TABLE price_cache_old');
+            
+            // 5. Recreate the index
+            db.exec('CREATE INDEX idx_price_lookup ON price_cache(symbol, source, interval, timestamp)');
+            
+            console.log('Successfully updated price_cache table schema.');
+        }
+    } catch (error) {
+        console.error('Error updating database schema:', error);
+    }
+}
+
+// Run schema updates before creating tables
+updateDatabaseSchema();
+
 // Create tables if they don't exist
 db.exec(`
     CREATE TABLE IF NOT EXISTS users (
         userId TEXT PRIMARY KEY,
         cashBalance REAL DEFAULT 100000.00,
+        marginBalance REAL DEFAULT 0,
+        marginUsed REAL DEFAULT 0,
         createdAt TEXT DEFAULT (datetime('now', 'utc'))
     );
 
@@ -36,6 +93,31 @@ db.exec(`
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         userId TEXT,
         symbol TEXT,
+        quantity REAL,
+        price REAL,
+        type TEXT CHECK(type IN ('buy', 'sell')),
+        timestamp TEXT DEFAULT (datetime('now', 'utc')),
+        FOREIGN KEY (userId) REFERENCES users(userId)
+    );
+    
+    CREATE TABLE IF NOT EXISTS crypto_portfolio (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        userId TEXT,
+        coinId TEXT,
+        symbol TEXT,
+        name TEXT,
+        quantity REAL,
+        averagePurchasePrice REAL,
+        FOREIGN KEY (userId) REFERENCES users(userId),
+        UNIQUE(userId, coinId)
+    );
+
+    CREATE TABLE IF NOT EXISTS crypto_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        userId TEXT,
+        coinId TEXT,
+        symbol TEXT,
+        name TEXT,
         quantity REAL,
         price REAL,
         type TEXT CHECK(type IN ('buy', 'sell')),
@@ -93,12 +175,14 @@ db.exec(`
         symbol TEXT NOT NULL,
         price REAL NOT NULL,
         timestamp TEXT NOT NULL,
-        source TEXT CHECK(source IN ('finnhub', 'yahoo')) NOT NULL,
+        source TEXT CHECK(source IN ('finnhub', 'yahoo', 'coingecko')) NOT NULL,
         interval TEXT DEFAULT '1m' NOT NULL,
         UNIQUE(symbol, source, interval, timestamp)
     );
     
     CREATE INDEX IF NOT EXISTS idx_price_lookup ON price_cache(symbol, source, interval, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_crypto_portfolio_lookup ON crypto_portfolio(userId, coinId);
+    CREATE INDEX IF NOT EXISTS idx_crypto_transactions_lookup ON crypto_transactions(userId, timestamp);
 `);
 
 export default db;
