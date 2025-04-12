@@ -512,15 +512,69 @@ export const coinGeckoService = {
             const allCoins = await this.getCoinsList();
             
             // Filter by query
-            const normalizedQuery = query.toLowerCase();
+            const normalizedQuery = query.toLowerCase().trim();
             const filteredCoins = allCoins.filter(coin => 
                 coin.id.toLowerCase().includes(normalizedQuery) || 
                 coin.symbol.toLowerCase().includes(normalizedQuery) || 
                 coin.name.toLowerCase().includes(normalizedQuery)
             );
             
-            // Limit to 25 results to avoid overwhelming the user
-            return filteredCoins.slice(0, 25);
+            if (filteredCoins.length === 0) {
+                return [];
+            }
+            
+            // Get top coins by market cap (which we'll use to sort our results)
+            // and to break ties for exact symbol matches
+            const topCoins = await this.getTopCoins(250);
+            const marketCapMap = new Map<string, number>();
+            
+            // Create a map of coin ids to their market caps
+            for (const coin of topCoins) {
+                marketCapMap.set(coin.id, coin.market_cap);
+            }
+            
+            // Look for exact symbol matches (case insensitive)
+            const exactSymbolMatches = filteredCoins.filter(
+                coin => coin.symbol.toLowerCase() === normalizedQuery
+            );
+            
+            // Handle exact symbol matches
+            if (exactSymbolMatches.length > 0) {
+                // If we have multiple exact matches, sort them by market cap
+                if (exactSymbolMatches.length > 1) {
+                    exactSymbolMatches.sort((a, b) => {
+                        const marketCapA = marketCapMap.get(a.id) || 0;
+                        const marketCapB = marketCapMap.get(b.id) || 0;
+                        return marketCapB - marketCapA; // Descending order
+                    });
+                }
+                
+                // Put the best exact symbol match at the beginning of the results
+                // and include the remaining coins
+                const bestMatch = exactSymbolMatches[0];
+                const remainingCoins = filteredCoins.filter(
+                    coin => coin.id !== bestMatch.id
+                );
+                
+                // Return with the best match first, followed by other matches
+                return [bestMatch, ...remainingCoins].slice(0, 25);
+            }
+            
+            try {
+                // Sort the filtered coins by market cap (if available)
+                const sortedCoins = [...filteredCoins].sort((a, b) => {
+                    const marketCapA = marketCapMap.get(a.id) || 0;
+                    const marketCapB = marketCapMap.get(b.id) || 0;
+                    return marketCapB - marketCapA; // Descending order
+                });
+                
+                // Limit to 25 results to avoid overwhelming the user
+                return sortedCoins.slice(0, 25);
+            } catch (error) {
+                console.error('Error sorting by market cap:', error);
+                // Fallback to unsorted if there was an error
+                return filteredCoins.slice(0, 25);
+            }
         } catch (error) {
             console.error('Error searching for coins:', error);
             return [];
