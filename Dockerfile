@@ -20,7 +20,13 @@ WORKDIR /app
 
 # Install Python and required packages
 RUN apk add --no-cache python3 py3-pip bash
-RUN python3 -m pip install --no-cache-dir yfinance flask
+
+# Create and use a Python virtual environment
+RUN python3 -m venv /app/venv
+ENV PATH="/app/venv/bin:$PATH"
+
+# Now install Python packages in the virtual environment
+RUN pip install --no-cache-dir yfinance flask
 
 # Create data directory for SQLite database
 RUN mkdir -p /app/data && \
