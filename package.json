@@ -7,7 +7,11 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start-yf-service": "src/python_services/start_service.sh",
+    "install-yf-service": "sudo cp src/python_services/yf-service.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable yf-service",
+    "start-yf-service-bg": "src/python_services/start_service.sh > yf-service.log 2>&1 &",
+    "stop-yf-service": "pkill -f yf_service.py || echo 'No yf_service running'"
   },
   "keywords": [
     "discord",

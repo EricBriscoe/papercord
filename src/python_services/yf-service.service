@@ -1,0 +1,15 @@
+[Unit]
+Description=Yahoo Finance Python Service
+After=network.target
+
+[Service]
+User=eric
+WorkingDirectory=/home/eric/dev/paper-cord
+ExecStart=/home/eric/dev/paper-cord/src/python_services/start_service.sh
+Restart=on-failure
+RestartSec=10
+Environment=NODE_ENV=production
+Environment=YF_PYTHON_SERVICE_URL=http://localhost:3001
+
+[Install]
+WantedBy=multi-user.target

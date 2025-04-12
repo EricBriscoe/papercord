@@ -106,7 +106,7 @@ export const priceOptionCommand: Command = {
                     },
                     { 
                         name: 'Time to Expiry', 
-                        value: `${(timeToExpiry * 365).toFixed(0)} days (${timeToExpiry.toFixed(2)} years)`, 
+                        value: `${Math.round(timeToExpiry)} days (${(timeToExpiry / 365).toFixed(2)} years)`, 
                         inline: false
                     }
                 ])

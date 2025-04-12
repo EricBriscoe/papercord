@@ -8,6 +8,7 @@ services:
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - FINNHUB_API_KEY=${FINNHUB_API_KEY}
+      - YF_PYTHON_SERVICE_URL=http://localhost:3001
     volumes:
       - ./data:/app/data
     # Healthcheck to ensure the bot is running properly
