@@ -51,6 +51,7 @@
 #### Prerequisites
 
 - Node.js (v16 or higher)
+- Python 3.8+ (for Yahoo Finance data)
 - Discord Bot Token
 - Finnhub API Key (optional, but recommended)
 
@@ -61,16 +62,27 @@
    ```
    npm install
    ```
-3. Create a `.env` file in the root directory with:
+3. Create a Python virtual environment and install requirements:
+   ```
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install yfinance flask
+   ```
+4. Create a `.env` file in the root directory with:
    ```
    DISCORD_TOKEN=your_discord_bot_token_here
    FINNHUB_API_KEY=your_finnhub_api_key_here
+   YF_PYTHON_SERVICE_URL=http://localhost:3001
    ```
-4. Build the project:
+5. Build the project:
    ```
    npm run build
    ```
-5. Start the bot:
+6. Start the Yahoo Finance Python service:
+   ```
+   npm run start-yf-service-bg
+   ```
+7. Start the bot:
    ```
    npm start
    ```
@@ -87,6 +99,7 @@ docker run -d \
   --name papercord \
   -e DISCORD_TOKEN=your_discord_bot_token \
   -e FINNHUB_API_KEY=your_finnhub_api_key \
+  -e YF_PYTHON_SERVICE_URL=http://localhost:3001 \
   -v /path/to/data:/app/data \
   ghcr.io/ericbriscoe/papercord:latest
 ```
@@ -108,6 +121,10 @@ Or use Docker Compose (see the `docker-compose.yml` file in the repository).
 ## Development
 
 - Run in development mode: `npm run dev`
+- Start Yahoo Finance service: `npm run start-yf-service`
+- Start Yahoo Finance service in background: `npm run start-yf-service-bg` 
+- Install Yahoo Finance service as systemd service: `npm run install-yf-service`
+- Stop Yahoo Finance service: `npm run stop-yf-service`
 - Build: `npm run build`
 - Build Docker image: `docker build -t papercord .`
 
@@ -117,6 +134,8 @@ Or use Docker Compose (see the `docker-compose.yml` file in the repository).
 - Discord.js
 - SQLite (better-sqlite3)
 - Finnhub API
+- Python / yfinance (for Yahoo Finance data)
+- Flask (Python web framework)
 - Docker
 
 ## License

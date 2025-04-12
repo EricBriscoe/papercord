@@ -1,6 +1,6 @@
 import { stockService } from './stockService';
 import { optionsDb, userDb, marginDb, portfolioDb } from '../database/operations';
-import { Option, OptionType, calculateTimeToExpiry, DEFAULT_RISK_FREE_RATE, getHistoricalVolatility } from '../utils/blackScholes';
+import { Option, OptionType, calculateTimeToExpiry, DEFAULT_RISK_FREE_RATE, getHistoricalVolatility, getCurrentRiskFreeRate } from '../utils/blackScholes';
 import { tradingService } from './tradingService';
 
 /**
@@ -92,11 +92,11 @@ export const optionsService = {
                 };
             }
 
-            // Calculate time to expiry in years
+            // Calculate time to expiry in days
             const expiry = new Date(expirationDate);
-            const timeToExpiry = calculateTimeToExpiry(expiry);
+            const daysToExpiry = calculateTimeToExpiry(expiry);
             
-            if (timeToExpiry <= 0) {
+            if (daysToExpiry <= 0) {
                 return { 
                     price: null, 
                     error: 'Expiration date must be in the future'
@@ -105,6 +105,12 @@ export const optionsService = {
 
             // Get volatility estimate - now async with real data
             const volatility = await getHistoricalVolatility(symbol);
+            
+            // Get the risk-free rate based on the time to expiry in days
+            const riskFreeRate = await getCurrentRiskFreeRate(daysToExpiry);
+
+            // Convert days to years for Black-Scholes calculation
+            const timeToExpiryYears = daysToExpiry / 365;
 
             // Calculate option price using Black-Scholes
             const type = optionType === 'call' ? OptionType.CALL : OptionType.PUT;
@@ -112,8 +118,8 @@ export const optionsService = {
                 type,
                 stockData.price,
                 strikePrice,
-                timeToExpiry,
-                DEFAULT_RISK_FREE_RATE,
+                timeToExpiryYears, // Convert days to years for the formula
+                riskFreeRate,
                 volatility
             );
 
@@ -339,17 +345,23 @@ export const optionsService = {
      */
     async calculateOptionValue(option: OptionPosition, currentStockPrice: number): Promise<number> {
         try {
-            // Calculate time to expiry
+            // Calculate time to expiry in days
             const expiry = new Date(option.expirationDate);
-            const timeToExpiry = calculateTimeToExpiry(expiry);
+            const daysToExpiry = calculateTimeToExpiry(expiry);
             
             // If option has expired, its value is 0
-            if (timeToExpiry <= 0) {
+            if (daysToExpiry <= 0) {
                 return 0;
             }
             
             // Get volatility estimate - now async with real data
             const volatility = await getHistoricalVolatility(option.symbol);
+            
+            // Get the risk-free rate based on the time to expiry in days
+            const riskFreeRate = await getCurrentRiskFreeRate(daysToExpiry);
+            
+            // Convert days to years for Black-Scholes calculation
+            const timeToExpiryYears = daysToExpiry / 365;
             
             // Use Black-Scholes to calculate option price
             const type = option.optionType === 'call' ? OptionType.CALL : OptionType.PUT;
@@ -357,8 +369,8 @@ export const optionsService = {
                 type,
                 currentStockPrice,
                 option.strikePrice,
-                timeToExpiry,
-                DEFAULT_RISK_FREE_RATE,
+                timeToExpiryYears, // Use years for the Black-Scholes formula
+                riskFreeRate,
                 volatility
             );
             
@@ -869,9 +881,9 @@ export const optionsService = {
                 const stockData = await stockService.getStockPrice(pos.symbol);
                 const stockPrice = stockData.price || 0;
                 
-                // Calculate time to expiry
+                // Calculate time to expiry in days
                 const expiry = new Date(pos.expirationDate);
-                const timeToExpiry = calculateTimeToExpiry(expiry);
+                const daysToExpiry = calculateTimeToExpiry(expiry);
                 
                 // Calculate intrinsic value and moneyness
                 const type = pos.optionType === 'call' ? OptionType.CALL : OptionType.PUT;
@@ -918,7 +930,7 @@ export const optionsService = {
                     currentPrice: currentPricePerShare || 0,
                     quantity: pos.quantity,
                     status: pos.status,
-                    timeToExpiry,
+                    timeToExpiry: daysToExpiry, // Store time to expiry in days
                     intrinsicValue,
                     moneyness,
                     marketValue: Math.abs(positionValue),

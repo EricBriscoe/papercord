@@ -137,7 +137,7 @@ export const optionsPortfolioCommand: Command = {
                         `**${optionSymbol}**${securedText}`,
                         `Strike: ${formatCurrency(pos.strikePrice)}`,
                         `Expiration: ${pos.formattedExpiration || new Date(pos.expirationDate).toLocaleDateString()}`,
-                        `Time to Expiry: ${(pos.timeToExpiry! * 365).toFixed(1)} days`,
+                        `Time to Expiry: ${Math.round(pos.timeToExpiry!)} days`,
                         `Moneyness: ${pos.moneyness}`,
                         `Price when Opened: ${formatCurrency(pos.purchasePrice! * 100)} per contract`,
                         `Current Price: ${formatCurrency(pos.currentPrice! * 100)} per contract`,

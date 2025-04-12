@@ -292,10 +292,27 @@ export class Option {
 }
 
 /**
- * Default risk-free interest rate (updated annually)
+ * Default risk-free interest rate (used as fallback)
  * This is an approximation of the 1-year US Treasury yield
  */
 export const DEFAULT_RISK_FREE_RATE = 0.05;  // 5% as of April 2025 (hypothetical)
+
+/**
+ * Get the current risk-free rate based on treasury yields
+ * @param daysToExpiry Time to expiry in days
+ * @returns Promise resolving to the appropriate risk-free rate for the given time horizon
+ */
+export async function getCurrentRiskFreeRate(daysToExpiry: number): Promise<number> {
+    try {
+        // Dynamically import to avoid circular dependencies
+        const { getRiskFreeRate } = await import('./riskFreeRate');
+        return await getRiskFreeRate(daysToExpiry);
+    } catch (error) {
+        console.error('Error getting current risk-free rate:', error);
+        // Fall back to the default rate if there's an error
+        return DEFAULT_RISK_FREE_RATE;
+    }
+}
 
 /**
  * Default volatility by sector
@@ -311,15 +328,14 @@ export const DEFAULT_VOLATILITY: { [sector: string]: number } = {
 };
 
 /**
- * Helper function to calculate time to expiry in years
+ * Helper function to calculate time to expiry in days
  * @param expirationDate Date of option expiration
- * @returns Time to expiry in years
+ * @returns Time to expiry in days
  */
 export function calculateTimeToExpiry(expirationDate: Date): number {
     const now = new Date();
     const diffMs = expirationDate.getTime() - now.getTime();
-    const diffDays = diffMs / (1000 * 60 * 60 * 24);
-    return diffDays / 365; // Convert days to years
+    return diffMs / (1000 * 60 * 60 * 24); // Return days
 }
 
 /**
@@ -401,7 +417,16 @@ export async function getHistoricalVolatility(
             
             // Extract close prices from the response
             const result = historyResponse.chart.result[0];
-            closePrices = result.indicators.quote[0].close;
+            
+            // Fix: Add proper null checks and use optional chaining with default empty array
+            if (result.indicators?.quote?.[0]?.close) {
+                closePrices = result.indicators.quote[0].close.filter(
+                    (price): price is number => price !== null && price !== undefined
+                );
+            } else {
+                console.warn(`Missing price data in API response for ${normalizedSymbol}, using default volatility`);
+                return DEFAULT_VOLATILITY.DEFAULT;
+            }
         }
         
         if (!closePrices || closePrices.length < 2) {
@@ -409,8 +434,8 @@ export async function getHistoricalVolatility(
             return DEFAULT_VOLATILITY.DEFAULT;
         }
         
-        // Filter out any null values
-        closePrices = closePrices.filter(price => price !== null && price !== undefined);
+        // Filter out any null values - this is now handled earlier for API data
+        // and database data already has non-null values
         
         if (closePrices.length < 2) {
             console.warn(`Insufficient valid price data for ${normalizedSymbol}, using default volatility`);
