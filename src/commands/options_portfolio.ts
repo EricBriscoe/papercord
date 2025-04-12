@@ -212,7 +212,7 @@ export const optionsPortfolioCommand: Command = {
             });
             
             // Create a collector for button interactions
-            const collector = message.createMessageComponentCollector({
+            let collector = message.createMessageComponentCollector({
                 time: 10 * 60 * 1000 // 10 minutes timeout
             });
             
@@ -291,6 +291,157 @@ export const optionsPortfolioCommand: Command = {
                                 collector.stop();
                                 return;
                             }
+                            
+                            // Stop the current collector
+                            collector.stop("Position closed");
+                            
+                            // Delete the current message and create a new one with updated data
+                            const newEmbed = generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex]);
+                            const newButtons = createButtons(currentPage);
+                            
+                            // Send a new message instead of updating the old one
+                            const newMessage = await interaction.editReply({
+                                embeds: [newEmbed],
+                                components: newButtons
+                            });
+                            
+                            // Create a new collector for the new message
+                            const newCollector = newMessage.createMessageComponentCollector({
+                                time: 10 * 60 * 1000 // 10 minutes timeout
+                            });
+                            
+                            // Replace old collector with new one
+                            collector = newCollector;
+                            
+                            // Set up the new collector with the same event handlers
+                            collector.on('collect', async (i) => {
+                                if (i.user.id !== interaction.user.id) {
+                                    await i.reply({ content: 'These buttons are not for you!', ephemeral: true });
+                                    return;
+                                }
+                                
+                                const customId = i.customId;
+                                // Handle buttons (this will reuse the same logic through recursion)
+                                if (customId === 'previous') {
+                                    currentPage = Math.max(0, currentPage - 1);
+                                } else if (customId === 'next') {
+                                    currentPage = Math.min(newTotalPages - 1, currentPage + 1);
+                                } else if (customId === 'sort') {
+                                    currentSortIndex = (currentSortIndex + 1) % SORT_CYCLE.length;
+                                    sortPositions(sortedPositions, SORT_CYCLE[currentSortIndex]);
+                                } else if (customId.startsWith('close_')) {
+                                    // Handle close button click with the same logic as parent scope
+                                    const positionId = parseInt(customId.split('_')[1]);
+                                    await i.deferUpdate();
+                                    
+                                    try {
+                                        const closeResult = await optionsService.closePosition(interaction.user.id, positionId);
+                                        
+                                        if (closeResult.success) {
+                                            await i.followUp({ 
+                                                content: `✅ ${closeResult.message}`, 
+                                                ephemeral: true 
+                                            });
+                                            
+                                            const updatedPortfolio = await optionsService.getOptionsPortfolio(interaction.user.id);
+                                            const updatedMarginStatus = await optionsService.calculateMarginStatus(interaction.user.id);
+                                            
+                                            sortedPositions = [...updatedPortfolio.positions];
+                                            sortPositions(sortedPositions, SORT_CYCLE[currentSortIndex]);
+                                            
+                                            const newTotalPages = Math.ceil(sortedPositions.length / POSITIONS_PER_PAGE);
+                                            
+                                            if (currentPage >= newTotalPages && newTotalPages > 0) {
+                                                currentPage = newTotalPages - 1;
+                                            }
+                                            
+                                            if (sortedPositions.length === 0) {
+                                                const emptyEmbed = new EmbedBuilder()
+                                                    .setTitle(`${interaction.user.username}'s Options Portfolio`)
+                                                    .setColor('#0099ff')
+                                                    .setDescription('Your options portfolio is now empty.')
+                                                    .addFields([
+                                                        { 
+                                                            name: 'Margin Status', 
+                                                            value: `Available: ${formatCurrency(updatedMarginStatus.availableMargin)}\nUsed: ${formatCurrency(updatedMarginStatus.marginUsed)} (${updatedMarginStatus.utilizationPercentage.toFixed(2)}%)`, 
+                                                            inline: false 
+                                                        }
+                                                    ])
+                                                    .setTimestamp();
+                                                
+                                                await interaction.editReply({ 
+                                                    embeds: [emptyEmbed], 
+                                                    components: [] 
+                                                });
+                                                
+                                                collector.stop();
+                                                return;
+                                            }
+                                            
+                                            // Same approach: create new message and collector
+                                            collector.stop("Position closed");
+                                            
+                                            const newEmbed = generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex]);
+                                            const newButtons = createButtons(currentPage);
+                                            
+                                            const newMessage = await interaction.editReply({
+                                                embeds: [newEmbed],
+                                                components: newButtons
+                                            });
+                                            
+                                            // Create a new collector (recursive)
+                                            collector = newMessage.createMessageComponentCollector({
+                                                time: 10 * 60 * 1000
+                                            });
+                                            
+                                            // We need to re-attach the event handlers to the new collector
+                                            // This is done automatically as this event handler is defined recursively
+                                        } else {
+                                            await i.followUp({ 
+                                                content: `❌ ${closeResult.message}`, 
+                                                ephemeral: true 
+                                            });
+                                            await i.update({
+                                                embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
+                                                components: createButtons(currentPage)
+                                            });
+                                        }
+                                    } catch (error) {
+                                        console.error('Error closing position:', error);
+                                        await i.followUp({ 
+                                            content: `An error occurred while closing the position: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                                            ephemeral: true 
+                                        });
+                                        await i.update({
+                                            embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
+                                            components: createButtons(currentPage)
+                                        });
+                                    }
+                                    return;
+                                }
+                                
+                                // Update for navigation/sort buttons
+                                await i.update({
+                                    embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
+                                    components: createButtons(currentPage)
+                                });
+                            });
+                            
+                            collector.on('end', async () => {
+                                try {
+                                    if (sortedPositions.length > 0) {
+                                        await interaction.editReply({
+                                            embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
+                                            components: []
+                                        });
+                                    }
+                                } catch (error) {
+                                    console.error('Error removing buttons after timeout:', error);
+                                }
+                            });
+                            
+                            // Return early since we've handled this interaction completely 
+                            return;
                         } else {
                             // Show error message
                             await i.followUp({ 

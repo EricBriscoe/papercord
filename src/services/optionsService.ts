@@ -250,6 +250,9 @@ export const optionsService = {
     ): boolean {
         if (position.position !== 'short') return false; // Only short positions can be secured
 
+        // Check if the position is already marked as secured in the database
+        if (position.isSecured) return true;
+
         if (position.optionType === 'put') {
             // Cash-secured put: User needs cash to buy shares at strike price
             const cashNeeded = position.strikePrice * CONTRACT_SIZE * position.quantity;
@@ -1224,6 +1227,90 @@ export const optionsService = {
                 message: error instanceof Error ? error.message : 'Unknown error while processing margin calls',
                 positionsLiquidated: 0
             };
+        }
+    },
+
+    /**
+     * Update secured status for all short positions
+     * This should be called whenever stock positions change to ensure accurate margin calculations
+     * @param userId User ID to update positions for
+     */
+    async updateSecuredStatus(userId: string): Promise<void> {
+        try {
+            // Get all open short positions
+            const shortPositions = optionsDb.getOpenPositions(userId)
+                .filter(p => p.position === 'short');
+            
+            if (shortPositions.length === 0) {
+                return; // No short positions to update
+            }
+            
+            // Get user's stock holdings
+            const stockPositions = portfolioDb.getUserPortfolio(userId);
+            const cash = userDb.getCashBalance(userId);
+            
+            // Group short positions by symbol
+            const positionsBySymbol: Record<string, OptionPosition[]> = {};
+            for (const position of shortPositions) {
+                if (!positionsBySymbol[position.symbol]) {
+                    positionsBySymbol[position.symbol] = [];
+                }
+                positionsBySymbol[position.symbol].push(position);
+            }
+            
+            // Process each symbol
+            for (const symbol in positionsBySymbol) {
+                const positions = positionsBySymbol[symbol];
+                const stockHolding = stockPositions.find(s => s.symbol === symbol)?.quantity || 0;
+                
+                // For each symbol, get the current stock price
+                const stockData = await stockService.getStockPrice(symbol);
+                const stockPrice = stockData.price || 0;
+                
+                // Process put positions first (cash secured puts)
+                const putPositions = positions.filter(p => p.optionType === 'put');
+                let remainingCash = cash;
+                
+                for (const position of putPositions) {
+                    const cashNeeded = position.strikePrice * CONTRACT_SIZE * position.quantity;
+                    const isSecured = remainingCash >= cashNeeded;
+                    
+                    // If status changed, update the database
+                    if (position.isSecured !== isSecured) {
+                        optionsDb.updatePositionSecuredStatus(position.id!, isSecured);
+                    }
+                    
+                    // Subtract the cash requirement if this position is secured
+                    if (isSecured) {
+                        remainingCash -= cashNeeded;
+                    }
+                }
+                
+                // Process call positions (covered calls)
+                const callPositions = positions.filter(p => p.optionType === 'call')
+                    // Sort by strike price (highest first) to prioritize covering higher strike options
+                    .sort((a, b) => b.strikePrice - a.strikePrice);
+                
+                let remainingShares = stockHolding;
+                
+                for (const position of callPositions) {
+                    const sharesNeeded = CONTRACT_SIZE * position.quantity;
+                    const isSecured = remainingShares >= sharesNeeded;
+                    
+                    // If status changed, update the database
+                    if (position.isSecured !== isSecured) {
+                        optionsDb.updatePositionSecuredStatus(position.id!, isSecured);
+                    }
+                    
+                    // Subtract the shares if this position is secured
+                    if (isSecured) {
+                        remainingShares -= sharesNeeded;
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Update secured status error:', error);
+            throw error;
         }
     },
 
