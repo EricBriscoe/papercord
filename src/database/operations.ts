@@ -334,6 +334,14 @@ export const optionsDb = {
     },
     
     /**
+     * Update position secured status
+     */
+    updatePositionSecuredStatus(positionId: number, isSecured: boolean): void {
+        const stmt = db.prepare('UPDATE options_positions SET isSecured = ? WHERE id = ?');
+        stmt.run(isSecured ? 1 : 0, positionId);
+    },
+    
+    /**
      * Get soon-to-expire options
      */
     getExpiringPositions(daysToExpiration = 1): OptionsPosition[] {

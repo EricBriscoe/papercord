@@ -1,5 +1,6 @@
 import { userDb, portfolioDb, transactionDb } from '../database/operations';
 import { stockService } from './stockService';
+import { optionsService } from './optionsService';
 
 // Define types for our portfolio data
 interface Position {
@@ -38,150 +39,152 @@ interface Transaction {
  */
 export const tradingService = {
     /**
-     * Buy a stock
+     * Buy stock
      */
     async buyStock(userId: string, symbol: string, quantity: number): Promise<{ success: boolean; message: string }> {
         try {
             // Validate input
-            if (quantity <= 0) {
-                return { success: false, message: 'Quantity must be greater than 0' };
+            if (quantity <= 0 || !Number.isInteger(quantity)) {
+                return { success: false, message: 'Quantity must be a positive integer' };
             }
-            
-            // Get user account - create if doesn't exist
-            const user = userDb.getOrCreateUser(userId);
-            
-            // Get current stock price
+
+            // Get stock price
             const stockData = await stockService.getStockPrice(symbol);
             if (!stockData.price) {
-                return { 
-                    success: false, 
-                    message: stockData.error || `Unable to find price for ${symbol}` 
-                };
+                return { success: false, message: stockData.error || `Unable to find price for ${symbol}` };
             }
-            
-            // Calculate cost
+
+            // Calculate total cost
             const totalCost = stockData.price * quantity;
-            
-            // Check minimum transaction value
-            if (totalCost < 0.01) {
-                return {
-                    success: false,
-                    message: `Transaction value ($${totalCost.toFixed(6)}) is too small. Minimum transaction value is $0.01.`
-                };
-            }
-            
+
+            // Get user's cash balance
+            const cashBalance = userDb.getCashBalance(userId);
+
             // Check if user has enough cash
-            if (user.cashBalance < totalCost) {
-                return { 
-                    success: false, 
-                    message: `Insufficient funds. You need $${totalCost.toFixed(2)} but have $${user.cashBalance.toFixed(2)}` 
-                };
+            if (cashBalance < totalCost) {
+                return { success: false, message: `Insufficient funds to buy ${quantity} shares of ${symbol}. You need $${totalCost.toFixed(2)} but have $${cashBalance.toFixed(2)}` };
             }
-            
+
+            // Update cash balance
+            userDb.updateCashBalance(userId, cashBalance - totalCost);
+
             // Get current position
-            const existingPosition = portfolioDb.getUserPosition(userId, symbol);
-            
-            // Update position with new average price and quantity
-            let newQuantity = quantity;
-            let newAveragePrice = stockData.price;
-            
-            if (existingPosition) {
-                newQuantity = existingPosition.quantity + quantity;
+            const position = portfolioDb.getUserPosition(userId, symbol);
+
+            if (position) {
                 // Calculate new average price
-                newAveragePrice = (
-                    (existingPosition.quantity * existingPosition.averagePurchasePrice) + 
-                    (quantity * stockData.price)
-                ) / newQuantity;
+                const newTotalQuantity = position.quantity + quantity;
+                const newTotalCost = position.quantity * position.averagePurchasePrice + quantity * stockData.price;
+                const newAveragePrice = newTotalCost / newTotalQuantity;
+
+                // Update position
+                portfolioDb.updatePosition(userId, symbol, newTotalQuantity, newAveragePrice);
+            } else {
+                // Create new position
+                portfolioDb.updatePosition(userId, symbol, quantity, stockData.price);
             }
-            
-            // Execute transaction
-            // 1. Update portfolio
-            portfolioDb.updatePosition(userId, symbol, newQuantity, newAveragePrice);
-            
-            // 2. Deduct cash
-            userDb.updateCashBalance(userId, user.cashBalance - totalCost);
-            
-            // 3. Record transaction
+
+            // Record transaction
             transactionDb.addTransaction(userId, symbol, quantity, stockData.price, 'buy');
             
-            return { 
-                success: true, 
-                message: `Successfully purchased ${quantity} share(s) of ${symbol} at $${stockData.price.toFixed(2)}` 
+            // Update secured status for options positions
+            await optionsService.updateSecuredStatus(userId);
+            
+            // Check if spending cash has created a margin call situation (if cash was securing puts)
+            const marginStatus = await optionsService.calculateMarginStatus(userId);
+            if (marginStatus.utilizationPercentage > 95) {
+                // Process potential margin call
+                await optionsService.processMarginCalls(userId);
+            }
+
+            return {
+                success: true,
+                message: `Successfully bought ${quantity} shares of ${symbol} at $${stockData.price.toFixed(2)} per share for a total of $${totalCost.toFixed(2)}`
             };
         } catch (error) {
             console.error('Buy stock error:', error);
-            return { 
-                success: false, 
-                message: error instanceof Error ? error.message : 'An unknown error occurred' 
+            return {
+                success: false,
+                message: error instanceof Error ? error.message : 'Unknown error occurred while buying stock'
             };
         }
     },
-    
+
     /**
-     * Sell a stock
+     * Sell stock
      */
     async sellStock(userId: string, symbol: string, quantity: number): Promise<{ success: boolean; message: string }> {
         try {
             // Validate input
-            if (quantity <= 0) {
-                return { success: false, message: 'Quantity must be greater than 0' };
+            if (quantity <= 0 || !Number.isInteger(quantity)) {
+                return { success: false, message: 'Quantity must be a positive integer' };
             }
-            
-            // Check if user has the position
+
+            // Get current position
             const position = portfolioDb.getUserPosition(userId, symbol);
-            if (!position) {
+
+            // Check if user owns the stock
+            if (!position || position.quantity <= 0) {
                 return { success: false, message: `You don't own any shares of ${symbol}` };
             }
-            
+
             // Check if user has enough shares
             if (position.quantity < quantity) {
-                return { 
-                    success: false, 
-                    message: `You only have ${position.quantity} share(s) of ${symbol}` 
-                };
+                return { success: false, message: `You don't have enough shares of ${symbol}. You have ${position.quantity} but are trying to sell ${quantity}` };
             }
-            
-            // Get current stock price
+
+            // Get stock price
             const stockData = await stockService.getStockPrice(symbol);
             if (!stockData.price) {
-                return { 
-                    success: false, 
-                    message: stockData.error || `Unable to find price for ${symbol}` 
-                };
+                return { success: false, message: stockData.error || `Unable to find price for ${symbol}` };
             }
-            
-            // Calculate sale proceeds
-            const saleProceeds = stockData.price * quantity;
-            
-            // Get user's current cash balance
-            const currentBalance = userDb.getCashBalance(userId);
-            
-            // Execute transaction
-            // 1. Update portfolio
+
+            // Calculate total proceeds
+            const totalProceeds = stockData.price * quantity;
+
+            // Update cash balance
+            const cashBalance = userDb.getCashBalance(userId);
+            userDb.updateCashBalance(userId, cashBalance + totalProceeds);
+
+            // Update position
             const newQuantity = position.quantity - quantity;
-            portfolioDb.updatePosition(userId, symbol, newQuantity, position.averagePurchasePrice);
-            
-            // 2. Add cash
-            userDb.updateCashBalance(userId, currentBalance + saleProceeds);
-            
-            // 3. Record transaction
+            if (newQuantity > 0) {
+                // Keep position with reduced quantity
+                portfolioDb.updatePosition(userId, symbol, newQuantity, position.averagePurchasePrice);
+            } else {
+                // Remove position altogether
+                portfolioDb.updatePosition(userId, symbol, 0, 0);
+            }
+
+            // Record transaction
             transactionDb.addTransaction(userId, symbol, quantity, stockData.price, 'sell');
             
+            // Update secured status for options positions
+            await optionsService.updateSecuredStatus(userId);
+            
+            // Check if the user now has a margin call situation after selling shares
+            const marginStatus = await optionsService.calculateMarginStatus(userId);
+            if (marginStatus.utilizationPercentage > 95) {
+                // Process potential margin call
+                await optionsService.processMarginCalls(userId);
+            }
+
             // Calculate profit/loss
-            const profitLoss = (stockData.price - position.averagePurchasePrice) * quantity;
-            const profitLossText = profitLoss >= 0 
+            const costBasis = position.averagePurchasePrice * quantity;
+            const profitLoss = totalProceeds - costBasis;
+            const plText = profitLoss >= 0 
                 ? `profit of $${profitLoss.toFixed(2)}` 
                 : `loss of $${Math.abs(profitLoss).toFixed(2)}`;
-            
-            return { 
-                success: true, 
-                message: `Successfully sold ${quantity} share(s) of ${symbol} at $${stockData.price.toFixed(2)} with a ${profitLossText}` 
+
+            return {
+                success: true,
+                message: `Successfully sold ${quantity} shares of ${symbol} at $${stockData.price.toFixed(2)} per share for a total of $${totalProceeds.toFixed(2)} with a ${plText}`
             };
         } catch (error) {
             console.error('Sell stock error:', error);
-            return { 
-                success: false, 
-                message: error instanceof Error ? error.message : 'An unknown error occurred' 
+            return {
+                success: false,
+                message: error instanceof Error ? error.message : 'Unknown error occurred while selling stock'
             };
         }
     },
