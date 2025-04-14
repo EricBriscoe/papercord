@@ -69,6 +69,36 @@ interface OptionsResponse {
     };
 }
 
+/**
+ * Interface for dividend information
+ */
+export interface DividendInfo {
+    symbol: string;
+    dividendRate: number | null;
+    dividendYield: number | null;
+    exDividendDate: number | null;
+    payoutRatio: number | null;
+    fiveYearAvgDividendYield: number | null;
+}
+
+/**
+ * Interface for dividend history entry
+ */
+export interface DividendHistoryEntry {
+    date: string;
+    timestamp: number;
+    amount: number;
+}
+
+/**
+ * Interface for dividend data response
+ */
+export interface DividendResponse {
+    info: DividendInfo;
+    history: DividendHistoryEntry[];
+    message?: string;
+}
+
 // Custom error class for service errors
 class YFServiceError extends Error {
     constructor(message: string = "Yahoo Finance service error") {
@@ -543,6 +573,31 @@ export const yfDataService = {
         } catch (error) {
             console.error(`Failed to get historical prices for ${symbol}:`, error);
             return [];
+        }
+    },
+    
+    /**
+     * Get dividend data for a symbol
+     * @param symbol Stock ticker symbol
+     * @returns Dividend data including rate, yield, and history
+     */
+    async getDividendData(symbol: string): Promise<DividendResponse | null> {
+        try {
+            const normalizedSymbol = symbol.toUpperCase();
+            
+            // Request dividend data from the Python service
+            const result = await YfData.getInstance().makeServiceRequest<DividendResponse>('/dividends', {
+                symbol: normalizedSymbol
+            });
+            
+            if (!result) {
+                throw new Error(`Failed to get dividend data for ${normalizedSymbol}`);
+            }
+            
+            return result;
+        } catch (error) {
+            console.error(`Failed to get dividend data for ${symbol}:`, error);
+            return null;
         }
     },
     

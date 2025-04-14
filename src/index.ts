@@ -14,6 +14,7 @@ import { leaderboardCommand } from './commands/leaderboard';
 import { cryptoBuyCommand } from './commands/crypto_buy';
 import { cryptoSellCommand } from './commands/crypto_sell';
 import { cryptoPriceCommand } from './commands/crypto_price';
+import { marginCommand } from './commands/margin';
 import { Command } from './models/command';
 import { optionsService } from './services/optionsService';
 import { optionsDb } from './database/operations';
@@ -51,6 +52,8 @@ const commands = new Collection<string, Command>();
     cryptoBuyCommand,
     cryptoSellCommand,
     cryptoPriceCommand,
+    // Margin and risk management commands
+    marginCommand,
     // Community commands
     leaderboardCommand
 ].forEach(command => {
@@ -93,19 +96,55 @@ client.once(Events.ClientReady, async (readyClient) => {
             }
         }, 86400000); // Run once per day (milliseconds)
         
-        // Set up a periodic job to process margin calls
+        // Set up periodic job to check margin status - warnings and notifications
         setInterval(async () => {
             try {
-                console.log('Processing margin calls...');
+                console.log('Checking margin warnings and notifications...');
+                // Process margin checks for all users with open positions
+                const usersWithOpenPositions = optionsDb.getUsersWithOpenPositions();
+                let warningsIssued = 0;
+                let callsIssued = 0;
+                
+                for (const userId of usersWithOpenPositions) {
+                    const result = await optionsService.processMarginCalls(userId);
+                    if (result.message.includes('Warning issued')) {
+                        warningsIssued++;
+                        console.log(`Margin warning for user ${userId}: ${result.message}`);
+                    } else if (result.message.includes('Margin call issued')) {
+                        callsIssued++;
+                        console.log(`Margin call for user ${userId}: ${result.message}`);
+                    }
+                }
+                
+                if (warningsIssued > 0 || callsIssued > 0) {
+                    console.log(`Issued ${warningsIssued} margin warnings and ${callsIssued} margin calls.`);
+                }
+            } catch (error) {
+                console.error('Error processing margin checks:', error);
+            }
+        }, 14400000); // Run every 4 hours (milliseconds) for margin warnings and calls
+        
+        // Set up periodic job to process liquidations for severe margin violations
+        setInterval(async () => {
+            try {
+                console.log('Processing liquidations for severe margin violations...');
                 // Process margin calls for all users with open positions
                 const usersWithOpenPositions = optionsDb.getUsersWithOpenPositions();
                 let totalLiquidated = 0;
                 
                 for (const userId of usersWithOpenPositions) {
-                    const result = await optionsService.processMarginCalls(userId);
-                    if (result.positionsLiquidated && result.positionsLiquidated > 0) {
-                        console.log(`Liquidated ${result.positionsLiquidated} positions for user ${userId}. ${result.message}`);
-                        totalLiquidated += result.positionsLiquidated;
+                    // Get margin status first
+                    const marginStatus = await optionsService.calculateMarginStatus(userId);
+                    const equityRatio = marginStatus.equityRatio || 
+                        ((marginStatus.portfolioValue - marginStatus.marginUsed) / marginStatus.portfolioValue);
+                    
+                    // Only proceed with liquidation for severe violations
+                    if (equityRatio <= 0.2) { // 20% threshold for liquidation
+                        const result = await optionsService.processMarginCalls(userId);
+                        if (result.positionsLiquidated && result.positionsLiquidated > 0) {
+                            console.log(`Liquidated ${result.positionsLiquidated} positions for user ${userId}. ${result.message}`);
+                            totalLiquidated += result.positionsLiquidated;
+                        }
                     }
                 }
                 
@@ -113,9 +152,10 @@ client.once(Events.ClientReady, async (readyClient) => {
                     console.log(`Total positions liquidated: ${totalLiquidated}`);
                 }
             } catch (error) {
-                console.error('Error processing margin calls:', error);
+                console.error('Error processing liquidations:', error);
             }
-        }, 3600000); // Run once per hour (milliseconds)
+        }, 3600000); // Run hourly (milliseconds) for severe margin violations
+        
     } catch (error) {
         console.error('Error registering commands:', error);
     }

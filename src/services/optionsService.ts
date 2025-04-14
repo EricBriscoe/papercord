@@ -1,7 +1,15 @@
 import { stockService } from './stockService';
 import { optionsDb, userDb, marginDb, portfolioDb } from '../database/operations';
-import { Option, OptionType, calculateTimeToExpiry, DEFAULT_RISK_FREE_RATE, getHistoricalVolatility, getCurrentRiskFreeRate } from '../utils/blackScholes';
+import { Option, OptionType, calculateTimeToExpiry, DEFAULT_RISK_FREE_RATE, getHistoricalVolatility, getCurrentRiskFreeRate, getDividendYield } from '../utils/blackScholes';
 import { tradingService } from './tradingService';
+import { 
+    INITIAL_MARGIN_PERCENTAGE, 
+    MAINTENANCE_MARGIN_PERCENTAGE, 
+    WARNING_THRESHOLD, 
+    MARGIN_CALL_THRESHOLD,
+    LIQUIDATION_THRESHOLD,
+    formatCurrency
+} from '../utils/marginConstants';
 
 /**
  * Interface for option contract
@@ -64,6 +72,7 @@ export interface MarginStatus {
     availableMargin: number;
     utilizationPercentage: number;
     portfolioValue: number;
+    equityRatio?: number;
 }
 
 // Contract size is standard 100 shares
@@ -108,19 +117,28 @@ export const optionsService = {
             
             // Get the risk-free rate based on the time to expiry in days
             const riskFreeRate = await getCurrentRiskFreeRate(daysToExpiry);
+            
+            // Get dividend yield for the stock
+            const dividendYield = await getDividendYield(symbol);
+            
+            // If this stock pays dividends, log the info
+            if (dividendYield > 0) {
+                console.log(`Using dividend yield of ${(dividendYield * 100).toFixed(2)}% for ${symbol}`);
+            }
 
             // Convert days to years for Black-Scholes calculation
             const timeToExpiryYears = daysToExpiry / 365;
 
-            // Calculate option price using Black-Scholes
+            // Calculate option price using Black-Scholes with dividend adjustment
             const type = optionType === 'call' ? OptionType.CALL : OptionType.PUT;
             const optionPrice = Option.price(
                 type,
                 stockData.price,
                 strikePrice,
-                timeToExpiryYears, // Convert days to years for the formula
+                timeToExpiryYears,
                 riskFreeRate,
-                volatility
+                volatility,
+                dividendYield
             );
 
             // Options are typically priced per share but contracts are for 100 shares
@@ -327,16 +345,19 @@ export const optionsService = {
             }
         }
         
-        // Available margin is a percentage of portfolio value minus margin used
-        const marginPercentage = 0.5; // 50% of portfolio value can be used as margin
-        const availableMargin = (totalPortfolioValue * marginPercentage) - marginUsed;
-        const utilizationPercentage = marginUsed / (totalPortfolioValue * marginPercentage) * 100;
+        // Available margin uses the initial margin percentage
+        const initialMarginAvailable = totalPortfolioValue * INITIAL_MARGIN_PERCENTAGE;
+        const utilizationPercentage = marginUsed / initialMarginAvailable * 100;
+        
+        // Calculate equity ratio for margin call determination
+        const equityRatio = (totalPortfolioValue - marginUsed) / totalPortfolioValue;
         
         return {
             marginUsed,
-            availableMargin,
+            availableMargin: initialMarginAvailable,
             utilizationPercentage,
-            portfolioValue: totalPortfolioValue
+            portfolioValue: totalPortfolioValue,
+            equityRatio
         };
     },
 
@@ -1127,6 +1148,8 @@ export const optionsService = {
     
     /**
      * Process margin calls and auto-liquidate positions if necessary
+     * Uses a tiered approach with warnings, margin calls, and liquidation thresholds
+     * 
      * @param userId User ID to process margin calls for
      * @returns Object containing liquidation results
      */
@@ -1139,87 +1162,195 @@ export const optionsService = {
         try {
             // Calculate current margin status
             const marginStatus = await this.calculateMarginStatus(userId);
+            const equityRatio = marginStatus.equityRatio || 
+                ((marginStatus.portfolioValue - marginStatus.marginUsed) / marginStatus.portfolioValue);
             
-            // If margin utilization is below threshold, no action needed
-            if (marginStatus.utilizationPercentage < 95) {
+            // Get existing margin calls
+            const existingCalls = marginDb.getPendingMarginCalls(userId);
+            
+            // No action needed if above warning threshold and no existing calls
+            if (equityRatio > WARNING_THRESHOLD && existingCalls.length === 0) {
                 return {
                     success: true,
-                    message: 'No margin call required',
+                    message: 'Margin status is healthy',
+                    positionsLiquidated: 0,
                     marginStatus
                 };
             }
             
-            // Get all open option positions sorted by risk (most risky first)
-            const positions = optionsDb.getOpenPositions(userId);
-            
-            // Filter to only include short positions (which use margin)
-            const shortPositions = positions.filter(p => p.position === 'short');
-            
-            if (shortPositions.length === 0) {
-                return {
-                    success: true,
-                    message: 'No short positions to liquidate',
-                    marginStatus
-                };
-            }
-            
-            // Sort positions by priority for liquidation:
-            // 1. Unsecured positions first (they use margin)
-            // 2. Higher margin requirement positions first
-            const positionsToLiquidate = shortPositions
-                .filter(p => !p.isSecured) // Only consider unsecured positions first
-                .sort((a, b) => b.marginRequired - a.marginRequired);
-            
-            if (positionsToLiquidate.length === 0) {
-                // If there are no unsecured positions, we should not have a margin call
-                return {
-                    success: true,
-                    message: 'All short positions are secured',
-                    marginStatus
-                };
-            }
-            
-            let positionsLiquidated = 0;
-            const liquidationResults: string[] = [];
-            
-            // Process positions until margin is back below threshold or no more positions to liquidate
-            for (const position of positionsToLiquidate) {
-                // Attempt to liquidate the position
-                const result = await this.closePosition(userId, position.id as number);
+            // Warning phase - equity ratio is between warning and margin call threshold
+            if (equityRatio <= WARNING_THRESHOLD && equityRatio > MARGIN_CALL_THRESHOLD) {
+                // If no warning has been issued yet, create one
+                if (existingCalls.length === 0) {
+                    const warningAmount = 0; // Warning doesn't require deposit
+                    marginDb.createMarginCall(
+                        userId, 
+                        warningAmount,
+                        `Margin warning: Equity ratio at ${(equityRatio * 100).toFixed(2)}%, approaching maintenance level.`
+                    );
+                    
+                    return {
+                        success: true,
+                        message: `Warning issued: Margin equity ratio at ${(equityRatio * 100).toFixed(2)}%, approaching maintenance level of ${(MARGIN_CALL_THRESHOLD * 100).toFixed(2)}%`,
+                        positionsLiquidated: 0,
+                        marginStatus
+                    };
+                }
                 
-                if (result.success) {
-                    positionsLiquidated++;
-                    liquidationResults.push(result.message);
+                // Warning already exists, no additional action needed
+                return {
+                    success: true,
+                    message: `Margin warning remains active. Equity ratio at ${(equityRatio * 100).toFixed(2)}%`,
+                    positionsLiquidated: 0,
+                    marginStatus
+                };
+            }
+            
+            // Margin call phase - equity ratio is between margin call and liquidation threshold
+            if (equityRatio <= MARGIN_CALL_THRESHOLD && equityRatio > LIQUIDATION_THRESHOLD) {
+                // Calculate amount needed to restore to safe levels
+                const portfolioValue = marginStatus.portfolioValue;
+                const currentEquity = portfolioValue * equityRatio;
+                const targetEquity = portfolioValue * WARNING_THRESHOLD;
+                const marginCallAmount = targetEquity - currentEquity;
+                
+                // Create a margin call if one doesn't exist yet or if situation has worsened
+                const relevantCall = existingCalls.find(call => call.reason.includes('Margin call:'));
+                
+                if (!relevantCall || marginCallAmount > relevantCall.amount) {
+                    marginDb.createMarginCall(
+                        userId, 
+                        marginCallAmount,
+                        `Margin call: Equity ratio at ${(equityRatio * 100).toFixed(2)}%, below maintenance level. Deposit required.`
+                    );
                     
-                    // Recalculate margin status
-                    const newMarginStatus = await this.calculateMarginStatus(userId);
+                    return {
+                        success: true,
+                        message: `Margin call issued: Equity ratio at ${(equityRatio * 100).toFixed(2)}%, below maintenance level of ${(MARGIN_CALL_THRESHOLD * 100).toFixed(2)}%. Deposit ${formatCurrency(marginCallAmount)} or close positions.`,
+                        positionsLiquidated: 0,
+                        marginStatus
+                    };
+                }
+                
+                // Margin call already exists, no additional action needed
+                return {
+                    success: true,
+                    message: `Margin call remains active. Equity ratio at ${(equityRatio * 100).toFixed(2)}%`,
+                    positionsLiquidated: 0,
+                    marginStatus
+                };
+            }
+            
+            // Liquidation phase - equity ratio is at or below liquidation threshold
+            if (equityRatio <= LIQUIDATION_THRESHOLD) {
+                // Create a liquidation margin call if one doesn't exist
+                const liquidationCall = existingCalls.find(call => call.reason.includes('LIQUIDATION'));
+                
+                if (!liquidationCall) {
+                    const portfolioValue = marginStatus.portfolioValue;
+                    const currentEquity = portfolioValue * equityRatio;
+                    const targetEquity = portfolioValue * WARNING_THRESHOLD;
+                    const marginCallAmount = targetEquity - currentEquity;
                     
-                    // If margin is now below threshold, stop liquidating
-                    if (newMarginStatus.utilizationPercentage < 80) {
-                        break;
+                    marginDb.createMarginCall(
+                        userId, 
+                        marginCallAmount,
+                        `LIQUIDATION NOTICE: Equity ratio at ${(equityRatio * 100).toFixed(2)}%, below liquidation threshold. Positions will be liquidated.`
+                    );
+                }
+                
+                // Proceed with automatic liquidation
+                // Get all open option positions sorted by risk (most risky first)
+                const positions = optionsDb.getOpenPositions(userId);
+                
+                // Filter to only include short positions (which use margin)
+                const shortPositions = positions.filter(p => p.position === 'short');
+                
+                if (shortPositions.length === 0) {
+                    return {
+                        success: true,
+                        message: 'No short positions to liquidate',
+                        marginStatus
+                    };
+                }
+                
+                // Sort positions by priority for liquidation:
+                // 1. Unsecured positions first (they use margin)
+                // 2. Higher margin requirement positions first
+                const positionsToLiquidate = shortPositions
+                    .filter(p => !p.isSecured) // Only consider unsecured positions first
+                    .sort((a, b) => b.marginRequired - a.marginRequired);
+                
+                if (positionsToLiquidate.length === 0) {
+                    return {
+                        success: true,
+                        message: 'All short positions are secured',
+                        marginStatus
+                    };
+                }
+                
+                let positionsLiquidated = 0;
+                const liquidationResults: string[] = [];
+                
+                // Process positions until margin is back above threshold or no more positions to liquidate
+                for (const position of positionsToLiquidate) {
+                    // Update position to liquidated status before closing to track reason
+                    optionsDb.updatePositionStatus(position.id!, 'liquidated');
+                    
+                    // Attempt to liquidate the position
+                    const result = await this.closePosition(userId, position.id as number);
+                    
+                    if (result.success) {
+                        positionsLiquidated++;
+                        liquidationResults.push(result.message);
+                        
+                        // Recalculate margin status
+                        const newMarginStatus = await this.calculateMarginStatus(userId);
+                        const newEquityRatio = newMarginStatus.equityRatio ||
+                            ((newMarginStatus.portfolioValue - newMarginStatus.marginUsed) / newMarginStatus.portfolioValue);
+                        
+                        // If margin is now above warning threshold, stop liquidating
+                        if (newEquityRatio > WARNING_THRESHOLD) {
+                            // Resolve all margin calls
+                            const pendingCalls = marginDb.getPendingMarginCalls(userId);
+                            for (const call of pendingCalls) {
+                                marginDb.resolveMarginCall(call.id!, 'liquidated');
+                            }
+                            break;
+                        }
                     }
+                }
+                
+                // Final margin status after liquidations
+                const finalMarginStatus = await this.calculateMarginStatus(userId);
+                const finalEquityRatio = finalMarginStatus.equityRatio ||
+                    ((finalMarginStatus.portfolioValue - finalMarginStatus.marginUsed) / finalMarginStatus.portfolioValue);
+                
+                // Generate result message
+                if (positionsLiquidated > 0) {
+                    return {
+                        success: true,
+                        message: `Liquidated ${positionsLiquidated} positions to meet margin requirements. New equity ratio: ${(finalEquityRatio * 100).toFixed(2)}%`,
+                        positionsLiquidated,
+                        marginStatus: finalMarginStatus
+                    };
+                } else {
+                    return {
+                        success: false,
+                        message: 'Failed to liquidate positions to meet margin requirements',
+                        positionsLiquidated: 0,
+                        marginStatus: finalMarginStatus
+                    };
                 }
             }
             
-            // Final margin status after liquidations
-            const finalMarginStatus = await this.calculateMarginStatus(userId);
-            
-            // Generate result message
-            if (positionsLiquidated > 0) {
-                return {
-                    success: true,
-                    message: `Liquidated ${positionsLiquidated} positions to meet margin requirements. New margin utilization: ${finalMarginStatus.utilizationPercentage.toFixed(2)}%`,
-                    positionsLiquidated,
-                    marginStatus: finalMarginStatus
-                };
-            } else {
-                return {
-                    success: false,
-                    message: 'Failed to liquidate positions to meet margin requirements',
-                    positionsLiquidated: 0,
-                    marginStatus: finalMarginStatus
-                };
-            }
+            // Default case
+            return {
+                success: true,
+                message: 'Margin status reviewed, no action required',
+                positionsLiquidated: 0,
+                marginStatus
+            };
         } catch (error) {
             console.error('Process margin calls error:', error);
             return {

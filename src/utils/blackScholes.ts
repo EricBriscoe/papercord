@@ -54,11 +54,12 @@ export class Option {
         strikePrice: number,
         timeToExpiry: number,
         riskFreeRate: number,
-        volatility: number
+        volatility: number,
+        dividendYield: number = 0
     ): number {
         return (
             Math.log(stockPrice / strikePrice) + 
-            (riskFreeRate + 0.5 * volatility * volatility) * timeToExpiry
+            ((riskFreeRate - dividendYield) + 0.5 * volatility * volatility) * timeToExpiry
         ) / (volatility * Math.sqrt(timeToExpiry));
     }
 
@@ -81,16 +82,19 @@ export class Option {
         strikePrice: number,
         timeToExpiry: number,
         riskFreeRate: number,
-        volatility: number
+        volatility: number,
+        dividendYield: number = 0
     ): number {
         if (timeToExpiry <= 0) {
             return Math.max(0, stockPrice - strikePrice);
         }
         
-        const d1 = this.d1(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility);
+        const d1 = this.d1(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, dividendYield);
         const d2 = this.d2(d1, volatility, timeToExpiry);
         
-        return stockPrice * normCDF(d1) - strikePrice * Math.exp(-riskFreeRate * timeToExpiry) * normCDF(d2);
+        // With dividend yield adjustment: Se^(-qT)N(d1) - Ke^(-rT)N(d2)
+        return stockPrice * Math.exp(-dividendYield * timeToExpiry) * normCDF(d1) 
+            - strikePrice * Math.exp(-riskFreeRate * timeToExpiry) * normCDF(d2);
     }
 
     /**
@@ -101,16 +105,19 @@ export class Option {
         strikePrice: number,
         timeToExpiry: number,
         riskFreeRate: number,
-        volatility: number
+        volatility: number,
+        dividendYield: number = 0
     ): number {
         if (timeToExpiry <= 0) {
             return Math.max(0, strikePrice - stockPrice);
         }
         
-        const d1 = this.d1(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility);
+        const d1 = this.d1(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, dividendYield);
         const d2 = this.d2(d1, volatility, timeToExpiry);
         
-        return strikePrice * Math.exp(-riskFreeRate * timeToExpiry) * normCDF(-d2) - stockPrice * normCDF(-d1);
+        // With dividend yield adjustment: Ke^(-rT)N(-d2) - Se^(-qT)N(-d1)
+        return strikePrice * Math.exp(-riskFreeRate * timeToExpiry) * normCDF(-d2) 
+            - stockPrice * Math.exp(-dividendYield * timeToExpiry) * normCDF(-d1);
     }
 
     /**
@@ -122,11 +129,12 @@ export class Option {
         strikePrice: number,
         timeToExpiry: number,
         riskFreeRate: number,
-        volatility: number
+        volatility: number,
+        dividendYield: number = 0
     ): number {
         return type === OptionType.CALL
-            ? this.callPrice(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility)
-            : this.putPrice(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility);
+            ? this.callPrice(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, dividendYield)
+            : this.putPrice(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, dividendYield);
     }
 
     /**
@@ -138,7 +146,8 @@ export class Option {
         strikePrice: number,
         timeToExpiry: number,
         riskFreeRate: number,
-        volatility: number
+        volatility: number,
+        dividendYield: number = 0
     ): number {
         if (timeToExpiry <= 0) {
             if (type === OptionType.CALL) {
@@ -148,11 +157,14 @@ export class Option {
             }
         }
         
-        const d1 = this.d1(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility);
+        const d1 = this.d1(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, dividendYield);
+        
+        // With dividend yield adjustment
+        const discountFactor = Math.exp(-dividendYield * timeToExpiry);
         
         return type === OptionType.CALL 
-            ? normCDF(d1) 
-            : normCDF(d1) - 1;
+            ? discountFactor * normCDF(d1) 
+            : discountFactor * (normCDF(d1) - 1);
     }
 
     /**
@@ -163,12 +175,16 @@ export class Option {
         strikePrice: number,
         timeToExpiry: number,
         riskFreeRate: number,
-        volatility: number
+        volatility: number,
+        dividendYield: number = 0
     ): number {
         if (timeToExpiry <= 0) return 0;
         
-        const d1 = this.d1(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility);
-        return normPDF(d1) / (stockPrice * volatility * Math.sqrt(timeToExpiry));
+        const d1 = this.d1(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, dividendYield);
+        
+        // With dividend yield adjustment
+        const discountFactor = Math.exp(-dividendYield * timeToExpiry);
+        return discountFactor * normPDF(d1) / (stockPrice * volatility * Math.sqrt(timeToExpiry));
     }
 
     /**
@@ -180,19 +196,26 @@ export class Option {
         strikePrice: number,
         timeToExpiry: number,
         riskFreeRate: number,
-        volatility: number
+        volatility: number,
+        dividendYield: number = 0
     ): number {
         if (timeToExpiry <= 0) return 0;
         
-        const d1 = this.d1(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility);
+        const d1 = this.d1(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, dividendYield);
         const d2 = this.d2(d1, volatility, timeToExpiry);
         
+        // With dividend yield adjustment
+        const discountFactorStock = Math.exp(-dividendYield * timeToExpiry);
+        const discountFactorStrike = Math.exp(-riskFreeRate * timeToExpiry);
+        
         if (type === OptionType.CALL) {
-            return -stockPrice * normPDF(d1) * volatility / (2 * Math.sqrt(timeToExpiry)) 
-                - riskFreeRate * strikePrice * Math.exp(-riskFreeRate * timeToExpiry) * normCDF(d2);
+            return -stockPrice * discountFactorStock * normPDF(d1) * volatility / (2 * Math.sqrt(timeToExpiry))
+                + dividendYield * stockPrice * discountFactorStock * normCDF(d1)
+                - riskFreeRate * strikePrice * discountFactorStrike * normCDF(d2);
         } else {
-            return -stockPrice * normPDF(d1) * volatility / (2 * Math.sqrt(timeToExpiry)) 
-                + riskFreeRate * strikePrice * Math.exp(-riskFreeRate * timeToExpiry) * normCDF(-d2);
+            return -stockPrice * discountFactorStock * normPDF(d1) * volatility / (2 * Math.sqrt(timeToExpiry))
+                - dividendYield * stockPrice * discountFactorStock * normCDF(-d1)
+                + riskFreeRate * strikePrice * discountFactorStrike * normCDF(-d2);
         }
     }
 
@@ -204,12 +227,16 @@ export class Option {
         strikePrice: number,
         timeToExpiry: number,
         riskFreeRate: number,
-        volatility: number
+        volatility: number,
+        dividendYield: number = 0
     ): number {
         if (timeToExpiry <= 0) return 0;
         
-        const d1 = this.d1(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility);
-        return stockPrice * Math.sqrt(timeToExpiry) * normPDF(d1);
+        const d1 = this.d1(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, dividendYield);
+        
+        // With dividend yield adjustment
+        const discountFactor = Math.exp(-dividendYield * timeToExpiry);
+        return stockPrice * discountFactor * Math.sqrt(timeToExpiry) * normPDF(d1);
     }
 
     /**
@@ -222,6 +249,7 @@ export class Option {
         strikePrice: number,
         timeToExpiry: number,
         riskFreeRate: number,
+        dividendYield: number = 0,
         maxIterations: number = 100,
         precision: number = 0.0001
     ): number {
@@ -230,14 +258,14 @@ export class Option {
         let i = 0;
         
         while (i++ < maxIterations) {
-            const price = this.price(type, stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility);
+            const price = this.price(type, stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, dividendYield);
             const diff = marketPrice - price;
             
             if (Math.abs(diff) < precision) {
                 return volatility;
             }
             
-            const vega = this.vega(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility);
+            const vega = this.vega(stockPrice, strikePrice, timeToExpiry, riskFreeRate, volatility, dividendYield);
             
             // Avoid division by zero
             if (Math.abs(vega) < 1e-10) {
@@ -359,47 +387,37 @@ export async function getHistoricalVolatility(
         const intervalMinutes = 1440; // Daily data (24 * 60)
         const durationMinutes = lookbackDays * 1440; // Convert days to minutes
         
-        // Check if we have complete coverage (at least one price point per interval)
-        // This lets the database determine if we have enough data
-        const hasCompleteData = priceCacheDb.hasCompleteCoverage(
-            normalizedSymbol,
-            'yahoo',
-            intervalMinutes,
-            durationMinutes
-        );
+        // Set a minimum data points threshold (trading days in a month minus weekends)
+        const minRequiredDataPoints = lookbackDays > 30 ? lookbackDays * 0.7 : 15; // Require about 70% coverage for volatility
+        
+        // Calculate date range for historical data
+        const endDate = new Date();
+        const startDate = new Date(endDate.getTime() - durationMinutes * 60 * 1000);
         
         let closePrices: number[] = [];
         
-        if (hasCompleteData) {
-            // Use cached data from database directly
-            console.log(`Using cached historical data with complete coverage for volatility calculation of ${normalizedSymbol}`);
-            
-            // Calculate date range for historical data
-            const endDate = new Date();
-            const startDate = new Date(endDate.getTime() - durationMinutes * 60 * 1000);
-            
-            // Get price series from database
-            const priceData = priceCacheDb.getTimeSeries(
-                normalizedSymbol,
-                'yahoo',
-                '1d',
-                lookbackDays * 2, // Get more than needed to ensure we have enough
-                startDate,
-                endDate
-            );
-            
-            if (priceData && priceData.length > 1) {
-                closePrices = priceData.map(entry => entry.price);
-            }
-        }
+        // First check if we have adequate historical data in the cache
+        // instead of using hasCompleteCoverage which is too strict
+        const priceData = priceCacheDb.getTimeSeries(
+            normalizedSymbol,
+            'yahoo',
+            '1d',
+            lookbackDays * 2, // Get more than needed to ensure we have enough
+            startDate,
+            endDate
+        );
         
-        // If we don't have enough data in cache or no complete coverage, fetch from API
-        if (closePrices.length < 2) {
-            console.log(`Fetching historical data for volatility calculation of ${normalizedSymbol}`);
+        // Check if we have enough data points already in cache
+        if (priceData && priceData.length >= minRequiredDataPoints) {
+            console.log(`Using cached ${priceData.length} historical prices for volatility calculation of ${normalizedSymbol}`);
+            closePrices = priceData.map(entry => entry.price);
+        } else {
+            // If we don't have enough data in cache, fetch from API
+            console.log(`Fetching historical data for volatility calculation of ${normalizedSymbol} (found ${priceData.length || 0} cached points, need ${minRequiredDataPoints})`);
             
             const periodMinutes = lookbackDays <= 30 ? 43200 :  // ~30 days
-                                  lookbackDays <= 90 ? 129600 : // ~90 days
-                                  259200;                       // ~180 days (6 months)
+                                lookbackDays <= 90 ? 129600 : // ~90 days
+                                259200;                       // ~180 days (6 months)
                                 
             const historyResponse = await yfDataService.getHistoricalData(
                 normalizedSymbol, 
@@ -429,16 +447,8 @@ export async function getHistoricalVolatility(
             }
         }
         
-        if (!closePrices || closePrices.length < 2) {
-            console.warn(`Insufficient price data for ${normalizedSymbol}, using default volatility`);
-            return DEFAULT_VOLATILITY.DEFAULT;
-        }
-        
-        // Filter out any null values - this is now handled earlier for API data
-        // and database data already has non-null values
-        
-        if (closePrices.length < 2) {
-            console.warn(`Insufficient valid price data for ${normalizedSymbol}, using default volatility`);
+        if (!closePrices || closePrices.length < minRequiredDataPoints) {
+            console.warn(`Insufficient price data for ${normalizedSymbol} (found ${closePrices?.length || 0}, need ${minRequiredDataPoints}), using default volatility`);
             return DEFAULT_VOLATILITY.DEFAULT;
         }
         
@@ -476,5 +486,92 @@ export async function getHistoricalVolatility(
     } catch (error) {
         console.error(`Error calculating volatility for ${symbol}:`, error);
         return DEFAULT_VOLATILITY.DEFAULT;
+    }
+}
+
+/**
+ * Get the annualized dividend yield for a symbol
+ * @param symbol Stock ticker symbol
+ * @returns Promise resolving to the annualized dividend yield as a decimal (e.g., 0.03 = 3%)
+ */
+export async function getDividendYield(symbol: string): Promise<number> {
+    try {
+        // Import the yfDataService dynamically to avoid circular dependencies
+        const { yfDataService } = await import('../services/yfDataService');
+        
+        // Get dividend data from Yahoo Finance
+        const dividendData = await yfDataService.getDividendData(symbol);
+        
+        // If we have dividend info and it includes yield, use it
+        if (dividendData?.info?.dividendYield) {
+            const rawYield = dividendData.info.dividendYield;
+            
+            // Yahoo Finance sometimes returns yield as a percentage (e.g., 1.28 for 1.28%)
+            // and sometimes as a decimal (e.g., 0.0128 for 1.28%)
+            // We need to ensure we're always working with a decimal format (0.0x)
+            
+            // If the yield is > 1, it's likely a percentage and needs conversion
+            if (rawYield > 1) {
+                console.debug(`Converting dividend yield for ${symbol} from percentage (${rawYield}) to decimal (${rawYield / 100})`);
+                return rawYield / 100;
+            }
+            
+            // Validate the yield is in a reasonable range (0-20%)
+            if (rawYield > 0.2) {
+                console.warn(`Unusually high dividend yield detected for ${symbol}: ${rawYield * 100}%, capping at 20%`);
+                return 0.2; // Cap at 20% which is already extremely high for a dividend yield
+            }
+            
+            return rawYield;
+        }
+        
+        // If we have dividend history but no explicit yield, calculate it
+        if (dividendData?.history && dividendData.history.length > 0) {
+            // Get the current stock quote
+            const quote = await yfDataService.getQuote(symbol);
+            const currentPrice = quote.regularMarketPrice || 0;
+            
+            if (currentPrice <= 0) {
+                return 0; // Can't calculate yield without a valid price
+            }
+            
+            // For a simple calculation, find the sum of dividends in the past year
+            const oneYearAgo = new Date();
+            oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+            
+            let annualDividend = 0;
+            
+            // Look for the most recent 4 quarterly dividends or 12 monthly dividends
+            const recentDividends = dividendData.history
+                .filter(d => new Date(d.date) >= oneYearAgo)
+                .slice(0, 4); // Most stocks pay quarterly, so use up to 4 payments
+                
+            if (recentDividends.length > 0) {
+                // Sum up the dividends
+                annualDividend = recentDividends.reduce((sum, div) => sum + div.amount, 0);
+                
+                // If we have fewer than 4 dividends (e.g., 1-3), extrapolate to a full year
+                if (recentDividends.length < 4) {
+                    annualDividend = annualDividend * (4 / recentDividends.length);
+                }
+                
+                // Calculate yield
+                const calculatedYield = annualDividend / currentPrice;
+                
+                // Validate the calculated yield is reasonable
+                if (calculatedYield > 0.2) {
+                    console.warn(`Calculated dividend yield for ${symbol} is unusually high: ${(calculatedYield * 100).toFixed(2)}%, capping at 20%`);
+                    return 0.2;
+                }
+                
+                return calculatedYield;
+            }
+        }
+        
+        // Default to 0 (no dividends) if we can't determine the yield
+        return 0;
+    } catch (error) {
+        console.error(`Failed to get dividend yield for ${symbol}:`, error);
+        return 0; // Default to no dividends
     }
 }
