@@ -21,7 +21,7 @@ if (API_KEY) {
 }
 
 // Define cache settings
-const CACHE_MAX_AGE_MINUTES = 15; // Maximum age of cache in minutes
+const CACHE_MAX_AGE_MINUTES = 1; // Maximum age of cache in minutes
 
 /**
  * Stock market service
