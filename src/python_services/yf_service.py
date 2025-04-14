@@ -174,6 +174,58 @@ def get_options():
         logger.error(f"Error fetching options for {symbol}: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/dividends', methods=['GET'])
+def get_dividends():
+    """Get dividend history for a symbol."""
+    symbol = request.args.get('symbol')
+    period = request.args.get('period', '5y')  # Default to 5 years of history
+    
+    if not symbol:
+        return jsonify({"error": "Symbol parameter is required"}), 400
+    
+    try:
+        # Use yfinance to fetch dividend data
+        ticker = yf.Ticker(symbol)
+        dividends = ticker.dividends
+        
+        # Get basic dividend info from the ticker info
+        dividend_info = {
+            "symbol": symbol,
+            "dividendRate": ticker.info.get("dividendRate"),
+            "dividendYield": ticker.info.get("dividendYield"),
+            "exDividendDate": ticker.info.get("exDividendDate"),
+            "payoutRatio": ticker.info.get("payoutRatio"),
+            "fiveYearAvgDividendYield": ticker.info.get("fiveYearAvgDividendYield")
+        }
+        
+        # Format dividend history
+        if not dividends.empty:
+            dividend_history = []
+            for date, amount in dividends.items():
+                dividend_history.append({
+                    "date": date.strftime('%Y-%m-%d'),
+                    "timestamp": int(date.timestamp()),
+                    "amount": float(amount)
+                })
+            
+            # Sort by date (newest first)
+            dividend_history.sort(key=lambda x: x["timestamp"], reverse=True)
+            
+            return jsonify({
+                "info": dividend_info,
+                "history": dividend_history
+            })
+        else:
+            return jsonify({
+                "info": dividend_info,
+                "history": [],
+                "message": "No dividend history found for this symbol"
+            })
+            
+    except Exception as e:
+        logger.error(f"Error fetching dividend data for {symbol}: {e}")
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3001))
     app.run(host='0.0.0.0', port=port, debug=True)
