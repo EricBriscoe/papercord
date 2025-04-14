@@ -215,9 +215,11 @@ export const priceOptionCommand: Command = {
                     }
                     
                     // Reply with the result in a new message that mentions the user who clicked the button
+                    // Make the message ephemeral so only the user who clicked the button can see it
                     await interaction.followUp({
                         content: `<@${buttonInteraction.user.id}>, your option trade has been processed:`,
-                        embeds: [resultEmbed]
+                        embeds: [resultEmbed],
+                        ephemeral: true
                     });
                 } catch (error) {
                     console.error('Button interaction error:', error);
