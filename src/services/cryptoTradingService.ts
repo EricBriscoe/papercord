@@ -3,7 +3,7 @@ import { cryptoPortfolioDb, cryptoTransactionDb, userDb } from '../database/oper
 import { formatCurrency } from '../utils/formatters';
 
 // Constants for safety limits
-const MAX_TRANSACTION_VALUE_USD = 1000000; // $1 million max transaction
+const MAX_TRANSACTION_VALUE_USD = 100000000000; // $100 billion max transaction
 const MIN_COIN_PRICE_USD = 0.000001; // Minimum price to consider valid (prevent division by zero issues)
 const MAX_COIN_QUANTITY = 1000000000000; // 1 trillion units max in a single transaction
 const MIN_POSITION_VALUE_USD = 0.01; // Positions worth less than 1 cent are considered dust
