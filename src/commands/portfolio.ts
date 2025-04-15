@@ -429,25 +429,56 @@ async function showStocksView(interaction: ChatInputCommandInteraction, portfoli
         // Handle button clicks
         if (i.customId === 'previous') {
             currentPage = Math.max(0, currentPage - 1);
+            await i.update({
+                embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
+                components: [createButtons(currentPage, true)]
+            });
         } else if (i.customId === 'next') {
             currentPage = Math.min(totalPages - 1, currentPage + 1);
+            await i.update({
+                embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
+                components: [createButtons(currentPage, true)]
+            });
         } else if (i.customId === 'sort') {
             // Update the sort index, cycling through options
             currentSortIndex = (currentSortIndex + 1) % SORT_CYCLE.length;
             sortPositions(sortedPositions, SORT_CYCLE[currentSortIndex]);
+            await i.update({
+                embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
+                components: [createButtons(currentPage, true)]
+            });
         } else if (i.customId === 'back_to_summary') {
-            // Go back to summary view
+            // Fix for the race condition - use deferUpdate and fetch data before update
+            await i.deferUpdate();
+            
+            // Fetch all data needed for summary view
             const totalPortfolioValue = await cryptoTradingService.getTotalPortfolioValue(interaction.user.id);
             const cryptoPortfolio = await cryptoTradingService.getCryptoPortfolio(interaction.user.id);
-            await i.update({ components: [] });
-            return await showSummaryView(interaction, portfolio, cryptoPortfolio, totalPortfolioValue);
+            
+            // Create a portfolio summary object
+            const portfolioSummary = {
+                cashBalance: portfolio.cashBalance,
+                totalStockValue: portfolio.totalValue - portfolio.cashBalance,
+                totalCryptoValue: cryptoPortfolio.reduce((sum: number, pos: any) => sum + (pos.currentValue || 0), 0),
+                totalOptionsValue: (await optionsService.getOptionsPortfolio(interaction.user.id)).totalValue,
+                totalPortfolioValue: totalPortfolioValue
+            };
+            
+            // Generate summary embed and components
+            const hasStocks = portfolio.positions && portfolio.positions.length > 0;
+            const hasCrypto = cryptoPortfolio && cryptoPortfolio.length > 0;
+            const embed = generateSummaryEmbed(interaction, portfolio, cryptoPortfolio, portfolioSummary, hasStocks, hasCrypto);
+            const components = generateSummaryButtons(hasStocks, hasCrypto);
+            
+            // Update the message in a single call
+            await interaction.editReply({
+                embeds: [embed],
+                components: components
+            });
+            
+            // We're manually handling this case, so return early
+            return;
         }
-        
-        // Update the message with new page and/or sorting
-        await i.update({
-            embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
-            components: [createButtons(currentPage, true)]
-        });
     });
     
     collector.on('end', async (collected, reason) => {
@@ -463,6 +494,120 @@ async function showStocksView(interaction: ChatInputCommandInteraction, portfoli
             }
         }
     });
+}
+
+/**
+ * Generate a summary embed for portfolio summary view
+ */
+function generateSummaryEmbed(
+    interaction: ChatInputCommandInteraction, 
+    stockPortfolio: any, 
+    cryptoPortfolio: any, 
+    totalValue: any,
+    hasStocks: boolean,
+    hasCrypto: boolean
+) {
+    const embed = new EmbedBuilder()
+        .setTitle(`${interaction.user.username}'s Portfolio Summary`)
+        .setColor('#0099ff')
+        .addFields([
+            { 
+                name: 'Cash Balance', 
+                value: formatCurrency(totalValue.cashBalance), 
+                inline: true
+            },
+            { 
+                name: 'Total Stock Value', 
+                value: formatCurrency(totalValue.totalStockValue), 
+                inline: true
+            },
+            { 
+                name: 'Total Crypto Value', 
+                value: formatCurrency(totalValue.totalCryptoValue), 
+                inline: true
+            },
+            { 
+                name: 'Total Options Value', 
+                value: formatCurrency(totalValue.totalOptionsValue), 
+                inline: true
+            },
+            { 
+                name: 'Total Portfolio Value', 
+                value: formatCurrency(totalValue.totalPortfolioValue), 
+                inline: false
+            }
+        ])
+        .setTimestamp();
+    
+    // Add top positions from each category
+    if (hasStocks) {
+        // Sort stock positions by market value and get top 3
+        const topStocks = [...stockPortfolio.positions]
+            .sort((a, b) => b.marketValue - a.marketValue)
+            .slice(0, 3);
+        
+        let stocksText = '';
+        topStocks.forEach((pos: any) => {
+            const profitLossSymbol = pos.profitLoss >= 0 ? '📈' : '📉';
+            stocksText += `${pos.symbol}: ${formatCurrency(pos.marketValue)} ${profitLossSymbol} ${pos.percentChange.toFixed(2)}%\n`;
+        });
+        
+        if (stockPortfolio.positions.length > 3) {
+            stocksText += `...and ${stockPortfolio.positions.length - 3} more stocks`;
+        }
+        
+        embed.addFields({
+            name: `Top Stocks (${stockPortfolio.positions.length} total)`,
+            value: stocksText || 'None',
+            inline: false
+        });
+    }
+    
+    if (hasCrypto) {
+        // Sort crypto positions by market value and get top 3
+        const topCrypto = [...cryptoPortfolio]
+            .sort((a, b) => (b.currentValue || 0) - (a.currentValue || 0))
+            .slice(0, 3);
+        
+        let cryptoText = '';
+        topCrypto.forEach((pos: any) => {
+            const profitLossSymbol = (pos.profitLossPercent || 0) >= 0 ? '📈' : '📉';
+            cryptoText += `${pos.symbol}: ${formatCurrency(pos.currentValue || 0)} ${profitLossSymbol} ${(pos.profitLossPercent || 0).toFixed(2)}%\n`;
+        });
+        
+        if (cryptoPortfolio.length > 3) {
+            cryptoText += `...and ${cryptoPortfolio.length - 3} more cryptocurrencies`;
+        }
+        
+        embed.addFields({
+            name: `Top Cryptocurrencies (${cryptoPortfolio.length} total)`,
+            value: cryptoText || 'None',
+            inline: false
+        });
+    }
+    
+    return embed;
+}
+
+/**
+ * Generate buttons for summary view
+ */
+function generateSummaryButtons(hasStocks: boolean, hasCrypto: boolean) {
+    const row = new ActionRowBuilder<ButtonBuilder>()
+        .addComponents(
+            new ButtonBuilder()
+                .setCustomId('view_stocks')
+                .setLabel('View Stocks')
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(!hasStocks),
+            new ButtonBuilder()
+                .setCustomId('view_crypto')
+                .setLabel('View Crypto')
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(!hasCrypto)
+        );
+    
+    return [row];
 }
 
 /**
@@ -603,25 +748,56 @@ async function showCryptoView(interaction: ChatInputCommandInteraction, portfoli
         // Handle button clicks
         if (i.customId === 'previous') {
             currentPage = Math.max(0, currentPage - 1);
+            await i.update({
+                embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
+                components: [createButtons(currentPage, true)]
+            });
         } else if (i.customId === 'next') {
             currentPage = Math.min(totalPages - 1, currentPage + 1);
+            await i.update({
+                embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
+                components: [createButtons(currentPage, true)]
+            });
         } else if (i.customId === 'sort') {
             // Update the sort index, cycling through options
             currentSortIndex = (currentSortIndex + 1) % SORT_CYCLE.length;
             sortPositions(sortedPositions, SORT_CYCLE[currentSortIndex]);
+            await i.update({
+                embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
+                components: [createButtons(currentPage, true)]
+            });
         } else if (i.customId === 'back_to_summary') {
-            // Go back to summary view
+            // Fix for the race condition - use deferUpdate and fetch data before update
+            await i.deferUpdate();
+            
+            // Fetch all data needed for summary view
             const totalPortfolioValue = await cryptoTradingService.getTotalPortfolioValue(interaction.user.id);
             const stockPortfolio = await tradingService.getPortfolio(interaction.user.id);
-            await i.update({ components: [] });
-            return await showSummaryView(interaction, stockPortfolio, portfolio, totalPortfolioValue);
+            
+            // Create a portfolio summary object
+            const portfolioSummary = {
+                cashBalance: cashBalance,
+                totalStockValue: stockPortfolio.positions.length > 0 ? stockPortfolio.totalValue - cashBalance : 0,
+                totalCryptoValue: portfolio.totalValue,
+                totalOptionsValue: (await optionsService.getOptionsPortfolio(interaction.user.id)).totalValue,
+                totalPortfolioValue: totalPortfolioValue
+            };
+            
+            // Generate summary embed and components
+            const hasStocks = stockPortfolio.positions && stockPortfolio.positions.length > 0;
+            const hasCrypto = portfolio.positions && portfolio.positions.length > 0;
+            const embed = generateSummaryEmbed(interaction, stockPortfolio, portfolio.positions, portfolioSummary, hasStocks, hasCrypto);
+            const components = generateSummaryButtons(hasStocks, hasCrypto);
+            
+            // Update the message in a single call
+            await interaction.editReply({
+                embeds: [embed],
+                components: components
+            });
+            
+            // We're manually handling this case, so return early
+            return;
         }
-        
-        // Update the message with new page and/or sorting
-        await i.update({
-            embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
-            components: [createButtons(currentPage, true)]
-        });
     });
     
     collector.on('end', async (collected, reason) => {
