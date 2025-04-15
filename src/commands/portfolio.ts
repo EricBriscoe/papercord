@@ -513,27 +513,27 @@ function generateSummaryEmbed(
         .addFields([
             { 
                 name: 'Cash Balance', 
-                value: formatCurrency(totalValue.cashBalance), 
+                value: formatCurrency(totalValue.cashBalance || 0), 
                 inline: true
             },
             { 
                 name: 'Total Stock Value', 
-                value: formatCurrency(totalValue.totalStockValue), 
+                value: formatCurrency(totalValue.totalStockValue || 0), 
                 inline: true
             },
             { 
                 name: 'Total Crypto Value', 
-                value: formatCurrency(totalValue.totalCryptoValue), 
+                value: formatCurrency(totalValue.totalCryptoValue || 0), 
                 inline: true
             },
             { 
                 name: 'Total Options Value', 
-                value: formatCurrency(totalValue.totalOptionsValue), 
+                value: formatCurrency(totalValue.totalOptionsValue || 0), 
                 inline: true
             },
             { 
                 name: 'Total Portfolio Value', 
-                value: formatCurrency(totalValue.totalPortfolioValue), 
+                value: formatCurrency(totalValue.totalPortfolioValue || 0), 
                 inline: false
             }
         ])
@@ -564,23 +564,30 @@ function generateSummaryEmbed(
     }
     
     if (hasCrypto) {
+        // Handle both formats: direct array or {positions: array}
+        const cryptoPositions = Array.isArray(cryptoPortfolio) ? cryptoPortfolio : (cryptoPortfolio.positions || []);
+        const positionCount = cryptoPositions.length;
+        
         // Sort crypto positions by market value and get top 3
-        const topCrypto = [...cryptoPortfolio]
-            .sort((a, b) => (b.currentValue || 0) - (a.currentValue || 0))
+        const topCrypto = [...cryptoPositions]
+            .sort((a, b) => ((b.currentValue || b.marketValue || 0) - (a.currentValue || a.marketValue || 0)))
             .slice(0, 3);
         
         let cryptoText = '';
         topCrypto.forEach((pos: any) => {
-            const profitLossSymbol = (pos.profitLossPercent || 0) >= 0 ? '📈' : '📉';
-            cryptoText += `${pos.symbol}: ${formatCurrency(pos.currentValue || 0)} ${profitLossSymbol} ${(pos.profitLossPercent || 0).toFixed(2)}%\n`;
+            // Use various fallbacks to handle different property names
+            const value = pos.currentValue || pos.marketValue || 0;
+            const percentChange = pos.profitLossPercent || pos.profitLossPercentage || 0;
+            const profitLossSymbol = percentChange >= 0 ? '📈' : '📉';
+            cryptoText += `${pos.symbol}: ${formatCurrency(value)} ${profitLossSymbol} ${percentChange.toFixed(2)}%\n`;
         });
         
-        if (cryptoPortfolio.length > 3) {
-            cryptoText += `...and ${cryptoPortfolio.length - 3} more cryptocurrencies`;
+        if (positionCount > 3) {
+            cryptoText += `...and ${positionCount - 3} more cryptocurrencies`;
         }
         
         embed.addFields({
-            name: `Top Cryptocurrencies (${cryptoPortfolio.length} total)`,
+            name: `Top Cryptocurrencies (${positionCount} total)`,
             value: cryptoText || 'None',
             inline: false
         });
