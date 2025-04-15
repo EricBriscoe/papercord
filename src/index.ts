@@ -156,6 +156,48 @@ client.once(Events.ClientReady, async (readyClient) => {
             }
         }, 3600000); // Run hourly (milliseconds) for severe margin violations
         
+        // Set up periodic job to clean up worthless crypto positions
+        const cleanupCryptoPositions = async () => {
+            try {
+                console.log('Cleaning up worthless crypto positions...');
+                // Import dynamically to avoid circular dependencies
+                const { cryptoTradingService } = await import('./services/cryptoTradingService');
+                const { userDb } = await import('./database/operations');
+                
+                // Get all users that have crypto positions
+                const usersWithCrypto = userDb.getUsersWithCryptoPositions();
+                let totalPositionsLiquidated = 0;
+                let totalValueCredited = 0;
+                
+                for (const userId of usersWithCrypto) {
+                    // Run cleanup for each user
+                    const result = await cryptoTradingService.cleanupWorthlessPositions(userId);
+                    
+                    if (result.success && result.positionsLiquidated > 0) {
+                        console.log(`Cleaned up ${result.positionsLiquidated} worthless crypto positions for user ${userId}`);
+                        console.log(result.message);
+                        
+                        totalPositionsLiquidated += result.positionsLiquidated;
+                        totalValueCredited += result.totalCredited;
+                    }
+                }
+                
+                if (totalPositionsLiquidated > 0) {
+                    console.log(`Total crypto positions liquidated: ${totalPositionsLiquidated}, total value credited: ${totalValueCredited.toFixed(2)} USD`);
+                } else {
+                    console.log('No worthless crypto positions were found that needed cleanup');
+                }
+            } catch (error) {
+                console.error('Error cleaning up worthless crypto positions:', error);
+            }
+        };
+        
+        // Run cleanup immediately at startup
+        cleanupCryptoPositions();
+        
+        // Then set up the periodic job to run daily
+        setInterval(cleanupCryptoPositions, 86400000); // Run once per day (milliseconds)
+        
     } catch (error) {
         console.error('Error registering commands:', error);
     }

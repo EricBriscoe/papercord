@@ -167,6 +167,18 @@ export const userDb = {
     decreaseMarginUsed(userId: string, amount: number): void {
         const stmt = db.prepare('UPDATE users SET marginUsed = MAX(0, marginUsed - ?) WHERE userId = ?');
         stmt.run(amount, userId);
+    },
+
+    /**
+     * Get all users that have cryptocurrency positions
+     */
+    getUsersWithCryptoPositions(): string[] {
+        const stmt = db.prepare(`
+            SELECT DISTINCT userId FROM crypto_portfolio
+            WHERE quantity > 0
+        `);
+        const results = stmt.all() as {userId: string}[];
+        return results.map(row => row.userId);
     }
 };
 
