@@ -17,8 +17,8 @@ export const cryptoSellCommand: Command = {
         },
         {
             name: 'quantity',
-            description: 'Quantity of cryptocurrency to sell (e.g., 0.5)',
-            type: ApplicationCommandOptionType.Number,
+            description: 'Quantity of cryptocurrency to sell (e.g., 0.5) or "all" to sell entire position',
+            type: ApplicationCommandOptionType.String,
             required: false
         },
         {
@@ -40,23 +40,34 @@ export const cryptoSellCommand: Command = {
         try {
             const userId = interaction.user.id;
             const coinQuery = interaction.options.getString('coin', true);
-            const quantity = interaction.options.getNumber('quantity');
-            const sellAll = interaction.options.getBoolean('all') || false;
+            const quantityInput = interaction.options.getString('quantity');
+            const sellAllFlag = interaction.options.getBoolean('all') || false;
             const minPrice = interaction.options.getNumber('min_price');
+            
+            let sellAll = sellAllFlag;
+            let quantity: number | undefined = undefined;
+            
+            // Handle quantity input - could be a number or "all"
+            if (quantityInput) {
+                if (quantityInput.toLowerCase() === 'all') {
+                    sellAll = true;
+                } else {
+                    quantity = parseFloat(quantityInput);
+                    if (isNaN(quantity) || quantity <= 0) {
+                        await interaction.editReply('Quantity must be a positive number or "all".');
+                        return;
+                    }
+                }
+            }
             
             // Validate inputs
             if (!quantity && !sellAll) {
-                await interaction.editReply('Please specify either a quantity to sell or use the "all" option to sell your entire position.');
+                await interaction.editReply('Please specify either a quantity to sell or use "all" to sell your entire position.');
                 return;
             }
             
             if (quantity && sellAll) {
-                await interaction.editReply('Please specify either a quantity to sell or use the "all" option, not both.');
-                return;
-            }
-            
-            if (quantity && quantity <= 0) {
-                await interaction.editReply('Quantity must be greater than zero.');
+                await interaction.editReply('Please specify either a quantity to sell or use "all", not both.');
                 return;
             }
             
@@ -89,21 +100,18 @@ export const cryptoSellCommand: Command = {
             
             const currentPrice = priceData.price;
             
-            // Determine quantity to sell
-            const sellQuantity = sellAll ? 'all' : quantity!;
-            
             // If selling specific quantity, make sure user has enough
-            if (typeof sellQuantity === 'number' && sellQuantity > position.quantity) {
+            if (quantity && quantity > position.quantity) {
                 await interaction.editReply(`You only have ${position.quantity.toFixed(8)} ${coin.symbol.toUpperCase()} available to sell.`);
                 return;
             }
             
             // Calculate proceeds estimate for display
-            const displayQuantity = sellAll ? position.quantity : sellQuantity;
-            const estimatedProceeds = typeof displayQuantity === 'number' ? displayQuantity * currentPrice : 0;
+            const displayQuantity = sellAll ? position.quantity : quantity!;
+            const estimatedProceeds = displayQuantity * currentPrice;
             
             // Execute sell operation
-            const result = await cryptoTradingService.sellCrypto(userId, coin.id, sellQuantity === 'all' ? undefined : sellQuantity);
+            const result = await cryptoTradingService.sellCrypto(userId, coin.id, sellAll ? undefined : quantity);
             
             if (!result.success) {
                 await interaction.editReply(`Failed to sell cryptocurrency: ${result.message}`);
@@ -122,7 +130,7 @@ export const cryptoSellCommand: Command = {
                     },
                     {
                         name: 'Quantity Sold',
-                        value: typeof sellQuantity === 'number' ? sellQuantity.toFixed(8) : position.quantity.toFixed(8),
+                        value: sellAll ? `${position.quantity.toFixed(8)} (Full Position)` : quantity!.toFixed(8),
                         inline: true
                     },
                     {
@@ -142,7 +150,7 @@ export const cryptoSellCommand: Command = {
             const avgPurchasePrice = position.averagePurchasePrice;
             if (avgPurchasePrice > 0) {
                 const profitLossPerCoin = currentPrice - avgPurchasePrice;
-                const soldQuantity = typeof sellQuantity === 'number' ? sellQuantity : position.quantity;
+                const soldQuantity = sellAll ? position.quantity : quantity!;
                 const totalProfitLoss = profitLossPerCoin * soldQuantity;
                 const profitLossPercent = (profitLossPerCoin / avgPurchasePrice) * 100;
                 
@@ -161,8 +169,8 @@ export const cryptoSellCommand: Command = {
             }
             
             // Show remaining position if not selling all
-            if (!sellAll && typeof sellQuantity === 'number') {
-                const remainingQuantity = position.quantity - sellQuantity;
+            if (!sellAll && quantity) {
+                const remainingQuantity = position.quantity - quantity;
                 if (remainingQuantity > 0) {
                     embed.addFields({
                         name: 'Remaining Position',
