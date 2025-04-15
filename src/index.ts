@@ -15,6 +15,7 @@ import { cryptoBuyCommand } from './commands/crypto_buy';
 import { cryptoSellCommand } from './commands/crypto_sell';
 import { cryptoPriceCommand } from './commands/crypto_price';
 import { marginCommand } from './commands/margin';
+import { sudoCommand } from './commands/sudo';
 import { Command } from './models/command';
 import { optionsService } from './services/optionsService';
 import { optionsDb } from './database/operations';
@@ -55,7 +56,9 @@ const commands = new Collection<string, Command>();
     // Margin and risk management commands
     marginCommand,
     // Community commands
-    leaderboardCommand
+    leaderboardCommand,
+    // Admin commands
+    sudoCommand
 ].forEach(command => {
     commands.set(command.name, command);
 });
