@@ -1,5 +1,12 @@
 import { coinGeckoService } from './coinGeckoService';
 import { cryptoPortfolioDb, cryptoTransactionDb, userDb } from '../database/operations';
+import { formatCurrency } from '../utils/formatters';
+
+// Constants for safety limits
+const MAX_TRANSACTION_VALUE_USD = 1000000; // $1 million max transaction
+const MIN_COIN_PRICE_USD = 0.00000001; // Minimum price to consider valid (prevent division by zero issues)
+const MAX_COIN_QUANTITY = 1000000000000; // 1 trillion units max in a single transaction
+const MIN_POSITION_VALUE_USD = 0.01; // Positions worth less than 1 cent are considered dust
 
 export const cryptoTradingService = {
   /**
@@ -51,14 +58,39 @@ export const cryptoTradingService = {
         return { success: false, message: 'Amount must be greater than 0' };
       }
 
+      // Enforce maximum transaction value
+      if (amountUsd > MAX_TRANSACTION_VALUE_USD) {
+        return { 
+          success: false, 
+          message: `Transaction amount exceeds the maximum allowed (${formatCurrency(MAX_TRANSACTION_VALUE_USD)})`
+        };
+      }
+
       // Get the current price
       const price = await this.getPrice(coinId);
-      if (!price || price <= 0) {
+      
+      // Validate price
+      if (!price) {
         return { success: false, message: `Couldn't get a valid price for ${coinId}` };
+      }
+      
+      if (price <= MIN_COIN_PRICE_USD) {
+        return { 
+          success: false, 
+          message: `Price of ${coinId} is too low (${price}). Minimum price threshold is ${MIN_COIN_PRICE_USD}` 
+        };
       }
 
       // Calculate the amount of crypto to buy
       const amount = amountUsd / price;
+      
+      // Check for unreasonable quantity due to very low price
+      if (amount > MAX_COIN_QUANTITY) {
+        return { 
+          success: false, 
+          message: `This would result in an unreasonably large quantity (${amount.toExponential(2)} units). Maximum allowed is ${MAX_COIN_QUANTITY.toExponential(2)}`
+        };
+      }
       
       // Get current user balance
       const cashBalance = userDb.getCashBalance(userId);
@@ -159,9 +191,59 @@ export const cryptoTradingService = {
 
       // Get current price
       const price = await this.getPrice(coinId);
+      
+      // Validate price
+      if (price <= MIN_COIN_PRICE_USD) {
+        // For extremely low-value coins, liquidate the entire position at a minimum price
+        // This prevents positions getting "stuck" due to price being too low
+        const liquidationPrice = MIN_COIN_PRICE_USD;
+        const liquidationProceeds = position.quantity * liquidationPrice;
+        
+        console.log(`Liquidating worthless position of ${coinId} (${position.quantity} units) at minimum price ${liquidationPrice}`);
+        
+        // Remove the position entirely
+        cryptoPortfolioDb.updatePosition(
+          userId,
+          coinId,
+          position.symbol,
+          position.name,
+          0,
+          0
+        );
+        
+        // Record the liquidation transaction
+        cryptoTransactionDb.addTransaction(
+          userId,
+          coinId,
+          position.symbol,
+          position.name,
+          position.quantity,
+          liquidationPrice,
+          'sell'
+        );
+        
+        // Add liquidation proceeds to user's cash
+        const cashBalance = userDb.getCashBalance(userId);
+        userDb.updateCashBalance(userId, cashBalance + liquidationProceeds);
+        
+        return {
+          success: true,
+          message: `Position in ${position.name || coinId} was liquidated at minimum price due to extremely low value. Received ${formatCurrency(liquidationProceeds)}.`,
+          proceeds: liquidationProceeds,
+          price: liquidationPrice
+        };
+      }
 
       // Calculate proceeds
       const proceeds = amountToSell * price;
+      
+      // Prevent extremely large transactions in value
+      if (proceeds > MAX_TRANSACTION_VALUE_USD) {
+        return { 
+          success: false, 
+          message: `Transaction value (${formatCurrency(proceeds)}) exceeds the maximum allowed (${formatCurrency(MAX_TRANSACTION_VALUE_USD)}). Please sell a smaller amount.`
+        };
+      }
 
       // Update user's position
       const newQuantity = position.quantity - amountToSell;
@@ -193,7 +275,7 @@ export const cryptoTradingService = {
 
       return {
         success: true,
-        message: `Successfully sold ${amountToSell} ${position.name || coinId} at $${price.toFixed(2)} for $${proceeds.toFixed(2)}`,
+        message: `Successfully sold ${amountToSell.toFixed(8)} ${position.name || coinId} at ${formatCurrency(price)} for ${formatCurrency(proceeds)}`,
         proceeds,
         price,
       };
@@ -347,6 +429,116 @@ export const cryptoTradingService = {
     } catch (error) {
       console.error(`Error fetching historical prices for ${symbol}:`, error);
       return null;
+    }
+  },
+
+  /**
+   * Clean up worthless positions (dust).
+   * This method looks for positions with negligible value and liquidates them.
+   * 
+   * @param userId User ID whose portfolio to clean
+   * @returns Object containing number of positions cleaned and total credited value
+   */
+  async cleanupWorthlessPositions(userId: string): Promise<{ 
+    success: boolean; 
+    positionsLiquidated: number; 
+    totalCredited: number;
+    message: string;
+  }> {
+    try {
+      // Get user's crypto holdings
+      const positions = cryptoPortfolioDb.getUserPortfolio(userId);
+
+      if (!positions || positions.length === 0) {
+        return { 
+          success: true, 
+          positionsLiquidated: 0, 
+          totalCredited: 0,
+          message: 'No positions to clean up' 
+        };
+      }
+
+      // Get current prices for all positions
+      const coinIds = positions.map(pos => pos.coinId);
+      const prices = await this.getMultiplePrices(coinIds);
+      
+      let positionsLiquidated = 0;
+      let totalCredited = 0;
+      const liquidationDetails: string[] = [];
+      
+      // Check each position
+      for (const position of positions) {
+        // If no price found, liquidate at minimum price
+        const price = prices[position.coinId] || MIN_COIN_PRICE_USD;
+        const positionValue = position.quantity * price;
+        
+        // If position value is very small or quantity is absurdly large
+        if (positionValue < MIN_POSITION_VALUE_USD || position.quantity > MAX_COIN_QUANTITY) {
+          const liquidationPrice = Math.max(price, MIN_COIN_PRICE_USD);
+          const liquidationValue = position.quantity * liquidationPrice;
+          
+          // Record the reason for liquidation
+          const reason = positionValue < MIN_POSITION_VALUE_USD 
+            ? 'dust position (below minimum value threshold)'
+            : 'excessive quantity';
+            
+          console.log(`Liquidating ${position.coinId} position for user ${userId}: ${position.quantity} units worth ${positionValue}. Reason: ${reason}`);
+          
+          // Record the transaction
+          cryptoTransactionDb.addTransaction(
+            userId,
+            position.coinId,
+            position.symbol,
+            position.name,
+            position.quantity,
+            liquidationPrice,
+            'sell'
+          );
+          
+          // Remove the position entirely
+          cryptoPortfolioDb.updatePosition(
+            userId,
+            position.coinId,
+            position.symbol,
+            position.name,
+            0,
+            0
+          );
+          
+          // Track for summary
+          positionsLiquidated++;
+          totalCredited += liquidationValue;
+          liquidationDetails.push(`${position.name} (${position.symbol}): ${position.quantity.toExponential(2)} units for ${formatCurrency(liquidationValue)} - Reason: ${reason}`);
+        }
+      }
+      
+      // If any positions were liquidated, update the user's cash balance
+      if (positionsLiquidated > 0) {
+        const cashBalance = userDb.getCashBalance(userId);
+        userDb.updateCashBalance(userId, cashBalance + totalCredited);
+        
+        return {
+          success: true,
+          positionsLiquidated,
+          totalCredited,
+          message: `Liquidated ${positionsLiquidated} positions with total value of ${formatCurrency(totalCredited)}.\nDetails:\n${liquidationDetails.join('\n')}`
+        };
+      }
+      
+      return { 
+        success: true, 
+        positionsLiquidated: 0, 
+        totalCredited: 0,
+        message: 'No positions required cleanup' 
+      };
+    } catch (error) {
+      console.error(`Error cleaning up worthless positions:`, error);
+      return { 
+        success: false, 
+        positionsLiquidated: 0, 
+        totalCredited: 0,
+        message: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+      };
     }
   },
 };
