@@ -2,7 +2,7 @@ import { userDb, portfolioDb, transactionDb } from '../database/operations';
 import { stockService } from './stockService';
 import { optionsService } from './optionsService';
 
-// Define types for our portfolio data
+// Data structure definitions for portfolio management
 interface Position {
     symbol: string;
     quantity: number;
@@ -34,33 +34,26 @@ interface Transaction {
     timestamp: string;
 }
 
-/**
- * Trading service
- */
 export const tradingService = {
     /**
-     * Buy stock
+     * Execute stock purchase for user
+     * Validates funds, updates positions with weighted average pricing,
+     * and handles margin implications of the transaction
      */
     async buyStock(userId: string, symbol: string, quantity: number): Promise<{ success: boolean; message: string }> {
         try {
-            // Validate input
             if (quantity <= 0 || !Number.isInteger(quantity)) {
                 return { success: false, message: 'Quantity must be a positive integer' };
             }
 
-            // Get stock price
             const stockData = await stockService.getStockPrice(symbol);
             if (!stockData.price) {
                 return { success: false, message: stockData.error || `Unable to find price for ${symbol}` };
             }
 
-            // Calculate total cost
             const totalCost = stockData.price * quantity;
-
-            // Get user's cash balance
             const cashBalance = userDb.getCashBalance(userId);
 
-            // Check if user has enough cash
             if (cashBalance < totalCost) {
                 return { success: false, message: `Insufficient funds to buy ${quantity} shares of ${symbol}. You need $${totalCost.toFixed(2)} but have $${cashBalance.toFixed(2)}` };
             }
@@ -68,32 +61,28 @@ export const tradingService = {
             // Update cash balance
             userDb.updateCashBalance(userId, cashBalance - totalCost);
 
-            // Get current position
+            // Update position with weighted average pricing
             const position = portfolioDb.getUserPosition(userId, symbol);
 
             if (position) {
-                // Calculate new average price
                 const newTotalQuantity = position.quantity + quantity;
                 const newTotalCost = position.quantity * position.averagePurchasePrice + quantity * stockData.price;
                 const newAveragePrice = newTotalCost / newTotalQuantity;
 
-                // Update position
                 portfolioDb.updatePosition(userId, symbol, newTotalQuantity, newAveragePrice);
             } else {
-                // Create new position
                 portfolioDb.updatePosition(userId, symbol, quantity, stockData.price);
             }
 
             // Record transaction
             transactionDb.addTransaction(userId, symbol, quantity, stockData.price, 'buy');
             
-            // Update secured status for options positions
+            // Update covered call and cash-secured put status
             await optionsService.updateSecuredStatus(userId);
             
-            // Check if spending cash has created a margin call situation (if cash was securing puts)
+            // Check if spending cash has created a margin call situation
             const marginStatus = await optionsService.calculateMarginStatus(userId);
             if (marginStatus.utilizationPercentage > 95) {
-                // Process potential margin call
                 await optionsService.processMarginCalls(userId);
             }
 
@@ -111,65 +100,56 @@ export const tradingService = {
     },
 
     /**
-     * Sell stock
+     * Execute stock sale for user
+     * Verifies position ownership, calculates profit/loss,
+     * and handles potential margin implications
      */
     async sellStock(userId: string, symbol: string, quantity: number): Promise<{ success: boolean; message: string }> {
         try {
-            // Validate input
             if (quantity <= 0 || !Number.isInteger(quantity)) {
                 return { success: false, message: 'Quantity must be a positive integer' };
             }
 
-            // Get current position
             const position = portfolioDb.getUserPosition(userId, symbol);
 
-            // Check if user owns the stock
             if (!position || position.quantity <= 0) {
                 return { success: false, message: `You don't own any shares of ${symbol}` };
             }
 
-            // Check if user has enough shares
             if (position.quantity < quantity) {
                 return { success: false, message: `You don't have enough shares of ${symbol}. You have ${position.quantity} but are trying to sell ${quantity}` };
             }
 
-            // Get stock price
             const stockData = await stockService.getStockPrice(symbol);
             if (!stockData.price) {
                 return { success: false, message: stockData.error || `Unable to find price for ${symbol}` };
             }
 
-            // Calculate total proceeds
             const totalProceeds = stockData.price * quantity;
-
-            // Update cash balance
             const cashBalance = userDb.getCashBalance(userId);
             userDb.updateCashBalance(userId, cashBalance + totalProceeds);
 
-            // Update position
+            // Update or remove position
             const newQuantity = position.quantity - quantity;
             if (newQuantity > 0) {
-                // Keep position with reduced quantity
                 portfolioDb.updatePosition(userId, symbol, newQuantity, position.averagePurchasePrice);
             } else {
-                // Remove position altogether
                 portfolioDb.updatePosition(userId, symbol, 0, 0);
             }
 
             // Record transaction
             transactionDb.addTransaction(userId, symbol, quantity, stockData.price, 'sell');
             
-            // Update secured status for options positions
+            // Update covered call status after selling shares
             await optionsService.updateSecuredStatus(userId);
             
-            // Check if the user now has a margin call situation after selling shares
+            // Check if selling shares that were covering options created a margin call
             const marginStatus = await optionsService.calculateMarginStatus(userId);
             if (marginStatus.utilizationPercentage > 95) {
-                // Process potential margin call
                 await optionsService.processMarginCalls(userId);
             }
 
-            // Calculate profit/loss
+            // Calculate and report P/L
             const costBasis = position.averagePurchasePrice * quantity;
             const profitLoss = totalProceeds - costBasis;
             const plText = profitLoss >= 0 
@@ -190,17 +170,14 @@ export const tradingService = {
     },
     
     /**
-     * Get user's portfolio with current market values
+     * Retrieves user's complete portfolio with current market values
+     * Fetches current prices for all positions to calculate real-time
+     * portfolio value, profit/loss, and percentage changes
      */
     async getPortfolio(userId: string): Promise<Portfolio> {
         try {
-            // Make sure user exists
             userDb.getOrCreateUser(userId);
-            
-            // Get user's positions
             const positions = portfolioDb.getUserPortfolio(userId) as Position[];
-            
-            // Get cash balance
             const cashBalance = userDb.getCashBalance(userId);
             
             if (positions.length === 0) {
@@ -212,11 +189,10 @@ export const tradingService = {
                 };
             }
             
-            // Get current prices for all positions
+            // Get current prices for all positions in parallel
             const pricePromises = positions.map((pos: Position) => stockService.getStockPrice(pos.symbol));
             const prices = await Promise.all(pricePromises);
             
-            // Calculate portfolio value
             let portfolioValue = 0;
             
             const positionsWithValues = positions.map((pos: Position) => {
@@ -253,13 +229,10 @@ export const tradingService = {
     },
     
     /**
-     * Get transaction history for a user
+     * Retrieves transaction history for a user
      */
     getTransactionHistory(userId: string, limit = 10): Transaction[] {
-        // Make sure user exists
         userDb.getOrCreateUser(userId);
-        
-        // Get transaction history
         return transactionDb.getUserTransactions(userId, limit) as Transaction[];
     }
 };

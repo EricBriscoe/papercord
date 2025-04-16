@@ -23,7 +23,7 @@ import { optionsDb } from './database/operations';
 // Load environment variables
 dotenv.config();
 
-// Initialize Discord client with all needed intents
+// Discord client with appropriate intents for guild interactions
 const client = new Client({ 
     intents: [
         GatewayIntentBits.Guilds,
@@ -33,11 +33,12 @@ const client = new Client({
     ] 
 });
 
-// Collection to store commands
+// Command registry
 const commands = new Collection<string, Command>();
 
-// Register commands
+// Register all available commands grouped by category
 [
+    // Basic trading commands
     buyCommand, 
     sellCommand, 
     portfolioCommand, 
@@ -63,22 +64,23 @@ const commands = new Collection<string, Command>();
     commands.set(command.name, command);
 });
 
-// Client ready event
+// Initialize bot and register slash commands with Discord API
 client.once(Events.ClientReady, async (readyClient) => {
     console.log(`Logged in as ${readyClient.user.tag}!`);
     
     try {
+        // Prepare command data for registration
         const commandData = Array.from(commands.values()).map(command => ({
             name: command.name,
             description: command.description,
             options: command.options
         }));
         
-        // Register commands with Discord
         const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN || '');
         
         console.log('Started refreshing application (/) commands.');
         
+        // Register global commands
         await rest.put(
             Routes.applicationCommands(readyClient.user.id),
             { body: commandData }
@@ -86,7 +88,7 @@ client.once(Events.ClientReady, async (readyClient) => {
         
         console.log('Successfully reloaded application (/) commands.');
         
-        // Set up a periodic job to process expired options
+        // Daily job to process expired options contracts
         setInterval(async () => {
             try {
                 console.log('Checking for expired options...');
@@ -97,13 +99,12 @@ client.once(Events.ClientReady, async (readyClient) => {
             } catch (error) {
                 console.error('Error processing expired options:', error);
             }
-        }, 86400000); // Run once per day (milliseconds)
+        }, 86400000); // 24 hours
         
-        // Set up periodic job to check margin status - warnings and notifications
+        // 4-hour job to monitor margin status and issue warnings
         setInterval(async () => {
             try {
                 console.log('Checking margin warnings and notifications...');
-                // Process margin checks for all users with open positions
                 const usersWithOpenPositions = optionsDb.getUsersWithOpenPositions();
                 let warningsIssued = 0;
                 let callsIssued = 0;
@@ -125,24 +126,22 @@ client.once(Events.ClientReady, async (readyClient) => {
             } catch (error) {
                 console.error('Error processing margin checks:', error);
             }
-        }, 14400000); // Run every 4 hours (milliseconds) for margin warnings and calls
+        }, 14400000); // 4 hours
         
-        // Set up periodic job to process liquidations for severe margin violations
+        // Hourly job to automatically liquidate positions for severe margin violations
         setInterval(async () => {
             try {
                 console.log('Processing liquidations for severe margin violations...');
-                // Process margin calls for all users with open positions
                 const usersWithOpenPositions = optionsDb.getUsersWithOpenPositions();
                 let totalLiquidated = 0;
                 
                 for (const userId of usersWithOpenPositions) {
-                    // Get margin status first
+                    // Liquidate positions when equity ratio falls below 20%
                     const marginStatus = await optionsService.calculateMarginStatus(userId);
                     const equityRatio = marginStatus.equityRatio || 
                         ((marginStatus.portfolioValue - marginStatus.marginUsed) / marginStatus.portfolioValue);
                     
-                    // Only proceed with liquidation for severe violations
-                    if (equityRatio <= 0.2) { // 20% threshold for liquidation
+                    if (equityRatio <= 0.2) {
                         const result = await optionsService.processMarginCalls(userId);
                         if (result.positionsLiquidated && result.positionsLiquidated > 0) {
                             console.log(`Liquidated ${result.positionsLiquidated} positions for user ${userId}. ${result.message}`);
@@ -157,23 +156,20 @@ client.once(Events.ClientReady, async (readyClient) => {
             } catch (error) {
                 console.error('Error processing liquidations:', error);
             }
-        }, 3600000); // Run hourly (milliseconds) for severe margin violations
+        }, 3600000); // 1 hour
         
-        // Set up periodic job to clean up worthless crypto positions
+        // Daily job to clean up "dust" crypto positions worth less than threshold
         const cleanupCryptoPositions = async () => {
             try {
                 console.log('Cleaning up worthless crypto positions...');
-                // Import dynamically to avoid circular dependencies
                 const { cryptoTradingService } = await import('./services/cryptoTradingService');
                 const { userDb } = await import('./database/operations');
                 
-                // Get all users that have crypto positions
                 const usersWithCrypto = userDb.getUsersWithCryptoPositions();
                 let totalPositionsLiquidated = 0;
                 let totalValueCredited = 0;
                 
                 for (const userId of usersWithCrypto) {
-                    // Run cleanup for each user
                     const result = await cryptoTradingService.cleanupWorthlessPositions(userId);
                     
                     if (result.success && result.positionsLiquidated > 0) {
@@ -195,18 +191,16 @@ client.once(Events.ClientReady, async (readyClient) => {
             }
         };
         
-        // Run cleanup immediately at startup
+        // Run crypto cleanup at startup and then daily
         cleanupCryptoPositions();
-        
-        // Then set up the periodic job to run daily
-        setInterval(cleanupCryptoPositions, 86400000); // Run once per day (milliseconds)
+        setInterval(cleanupCryptoPositions, 86400000); // 24 hours
         
     } catch (error) {
         console.error('Error registering commands:', error);
     }
 });
 
-// Handle interaction events (slash commands)
+// Slash command handler
 client.on(Events.InteractionCreate, async interaction => {
     if (!interaction.isChatInputCommand()) return;
     
