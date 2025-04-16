@@ -4,6 +4,11 @@ import { formatInTimeZone } from 'date-fns-tz';
  * Format a currency value with $ symbol and 2 decimal places
  */
 export function formatCurrency(value: number): string {
+    // Handle NaN, undefined, or null values
+    if (value === undefined || value === null || isNaN(value)) {
+        return '$0.00';
+    }
+    
     return new Intl.NumberFormat('en-US', {
         style: 'currency',
         currency: 'USD',
@@ -61,7 +66,57 @@ export function encodeUrlWithPlus(url: string): string {
  * Format a number with specified decimal places
  */
 export function formatNumber(value: number, decimals: number = 2): string {
+  // Handle NaN, undefined, or null values
+  if (value === undefined || value === null || isNaN(value)) {
+    return '0.00';
+  }
+  
   return new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  }).format(value);
+}
+
+/**
+ * Format a cryptocurrency amount with higher precision (8 decimal places by default)
+ * This is useful for currencies like Bitcoin where small fractions have value
+ */
+export function formatCryptoAmount(value: number, decimals: number = 8): string {
+  // Handle NaN, undefined, or null values
+  if (value === undefined || value === null || isNaN(value)) {
+    return '0.00000000';
+  }
+  
+  return new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: 0, // Don't show unnecessary zeros
+    maximumFractionDigits: decimals
+  }).format(value);
+}
+
+/**
+ * Format a cryptocurrency price with adaptive precision
+ * Shows more decimal places for very small values, fewer for larger values
+ */
+export function formatCryptoPrice(value: number): string {
+  // Handle NaN, undefined, or null values
+  if (value === undefined || value === null || isNaN(value)) {
+    return '$0.00';
+  }
+  
+  // Determine appropriate precision based on value magnitude
+  let decimals = 2; // Default for normal-sized values
+  
+  if (value < 0.0001) {
+    decimals = 8; // Very tiny values
+  } else if (value < 0.01) {
+    decimals = 6; // Small values
+  } else if (value < 1) {
+    decimals = 4; // Medium-small values
+  }
+  
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals
   }).format(value);

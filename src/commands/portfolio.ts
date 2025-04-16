@@ -2,7 +2,7 @@ import { ApplicationCommandOptionType, ChatInputCommandInteraction, EmbedBuilder
 import { Command } from '../models/command';
 import { tradingService } from '../services/tradingService';
 import { cryptoTradingService } from '../services/cryptoTradingService';
-import { formatCurrency, formatNumber, formatTimestamp } from '../utils/formatters';
+import { formatCurrency, formatNumber, formatTimestamp, formatCryptoAmount, formatCryptoPrice } from '../utils/formatters';
 import { userDb } from '../database/operations';
 import { optionsService } from '../services/optionsService';
 
@@ -678,12 +678,20 @@ async function showCryptoView(interaction: ChatInputCommandInteraction, portfoli
         // Add each position as a separate field
         currentPositions.forEach((pos: any) => {
             const profitLossSymbol = (pos.profitLoss || 0) >= 0 ? '📈' : '📉';
+            // Ensure values are numbers and not NaN
+            const quantity = isNaN(pos.quantity) ? 0 : pos.quantity;
+            const currentPrice = isNaN(pos.currentPrice) ? 0 : (pos.currentPrice || 0);
+            const marketValue = isNaN(pos.marketValue) ? 0 : (pos.marketValue || 0);
+            const avgPurchasePrice = isNaN(pos.averagePurchasePrice) ? 0 : pos.averagePurchasePrice;
+            const profitLoss = isNaN(pos.profitLoss) ? 0 : (pos.profitLoss || 0);
+            const profitLossPercentage = isNaN(pos.profitLossPercentage) ? 0 : (pos.profitLossPercentage || 0);
+            
             const positionDetails = [
-                `Quantity: ${formatNumber(pos.quantity)}`,
-                `Current Price: ${formatCurrency(pos.currentPrice || 0)}`,
-                `Market Value: ${formatCurrency(pos.marketValue || 0)}`,
-                `Avg Purchase: ${formatCurrency(pos.averagePurchasePrice)}`,
-                `P/L: ${profitLossSymbol} ${formatCurrency(pos.profitLoss || 0)} (${(pos.profitLossPercentage || 0).toFixed(2)}%)`
+                `Quantity: ${formatCryptoAmount(quantity)}`, // Higher precision for crypto amounts
+                `Current Price: ${formatCryptoPrice(currentPrice)}`, // Adaptive precision for prices
+                `Market Value: ${formatCurrency(marketValue)}`,
+                `Avg Purchase: ${formatCryptoPrice(avgPurchasePrice)}`, // Adaptive precision for prices
+                `P/L: ${profitLossSymbol} ${formatCurrency(profitLoss)} (${profitLossPercentage.toFixed(2)}%)`
             ].join('\n');
             
             embed.addFields({
