@@ -1,5 +1,6 @@
 import db from './database';
 
+// Core data structures for portfolio management
 interface User {
     userId: string;
     cashBalance: number;
@@ -30,6 +31,7 @@ interface Transaction {
     timestamp?: string;
 }
 
+// Options trading data structures
 interface OptionsPosition {
     id?: number;
     userId: string;
@@ -72,6 +74,7 @@ interface MarginCall {
     resolvedAt?: string;
 }
 
+// Cryptocurrency data structures
 interface CryptoPosition {
     id?: number;
     userId: string;
@@ -95,11 +98,11 @@ interface CryptoTransaction {
 }
 
 /**
- * User database operations
+ * User account management operations
  */
 export const userDb = {
     /**
-     * Get user from database, create if not exists
+     * Retrieves user or creates a new account if none exists
      */
     getOrCreateUser(userId: string): User {
         const stmt = db.prepare(`
@@ -112,7 +115,7 @@ export const userDb = {
     },
     
     /**
-     * Get user's cash balance
+     * Retrieves user's current cash balance
      */
     getCashBalance(userId: string): number {
         const stmt = db.prepare('SELECT cashBalance FROM users WHERE userId = ?');
@@ -121,7 +124,7 @@ export const userDb = {
     },
     
     /**
-     * Update user's cash balance
+     * Updates user's available cash balance
      */
     updateCashBalance(userId: string, newBalance: number): void {
         const stmt = db.prepare('UPDATE users SET cashBalance = ? WHERE userId = ?');
@@ -129,7 +132,7 @@ export const userDb = {
     },
     
     /**
-     * Get user's margin balance
+     * Retrieves user's margin account status
      */
     getMarginBalance(userId: string): { marginBalance: number, marginUsed: number } {
         const stmt = db.prepare('SELECT marginBalance, marginUsed FROM users WHERE userId = ?');
@@ -138,7 +141,7 @@ export const userDb = {
     },
     
     /**
-     * Update user's margin balance
+     * Sets user's margin account values directly
      */
     updateMarginBalance(userId: string, marginBalance: number, marginUsed: number): void {
         const stmt = db.prepare('UPDATE users SET marginBalance = ?, marginUsed = ? WHERE userId = ?');
@@ -146,7 +149,7 @@ export const userDb = {
     },
     
     /**
-     * Increase user's margin balance
+     * Adds to user's available margin
      */
     increaseMarginBalance(userId: string, amount: number): void {
         const stmt = db.prepare('UPDATE users SET marginBalance = marginBalance + ? WHERE userId = ?');
@@ -154,7 +157,7 @@ export const userDb = {
     },
     
     /**
-     * Increase user's margin used
+     * Reserves margin for new positions
      */
     increaseMarginUsed(userId: string, amount: number): void {
         const stmt = db.prepare('UPDATE users SET marginUsed = marginUsed + ? WHERE userId = ?');
@@ -162,7 +165,7 @@ export const userDb = {
     },
     
     /**
-     * Decrease user's margin used
+     * Releases margin when positions are closed
      */
     decreaseMarginUsed(userId: string, amount: number): void {
         const stmt = db.prepare('UPDATE users SET marginUsed = MAX(0, marginUsed - ?) WHERE userId = ?');
@@ -170,7 +173,7 @@ export const userDb = {
     },
 
     /**
-     * Get all users that have cryptocurrency positions
+     * Finds all users who have cryptocurrency holdings
      */
     getUsersWithCryptoPositions(): string[] {
         const stmt = db.prepare(`
@@ -183,11 +186,11 @@ export const userDb = {
 };
 
 /**
- * Portfolio database operations
+ * Stock portfolio management operations
  */
 export const portfolioDb = {
     /**
-     * Get user's portfolio
+     * Retrieves all stock positions for a user
      */
     getUserPortfolio(userId: string): Position[] {
         const stmt = db.prepare(`
@@ -199,7 +202,7 @@ export const portfolioDb = {
     },
     
     /**
-     * Get user's position for a specific symbol
+     * Retrieves a specific stock position
      */
     getUserPosition(userId: string, symbol: string): Position | undefined {
         const stmt = db.prepare(`
@@ -211,7 +214,7 @@ export const portfolioDb = {
     },
     
     /**
-     * Add or update a position in user's portfolio
+     * Creates or updates a stock position
      */
     updatePosition(userId: string, symbol: string, quantity: number, averagePrice: number): void {
         const stmt = db.prepare(`
@@ -225,11 +228,11 @@ export const portfolioDb = {
 };
 
 /**
- * Transaction database operations
+ * Stock transaction history operations
  */
 export const transactionDb = {
     /**
-     * Add a buy/sell transaction to history
+     * Records a stock transaction
      */
     addTransaction(userId: string, symbol: string, quantity: number, price: number, type: 'buy' | 'sell'): void {
         const stmt = db.prepare(`
@@ -240,7 +243,7 @@ export const transactionDb = {
     },
     
     /**
-     * Get transaction history for a user
+     * Retrieves stock transaction history
      */
     getUserTransactions(userId: string, limit = 10): Transaction[] {
         const stmt = db.prepare(`
@@ -254,11 +257,11 @@ export const transactionDb = {
 };
 
 /**
- * Options positions database operations
+ * Options position management operations
  */
 export const optionsDb = {
     /**
-     * Get all open options positions for a user
+     * Retrieves all open options positions for a user
      */
     getOpenPositions(userId: string): OptionsPosition[] {
         const stmt = db.prepare(`
@@ -270,7 +273,7 @@ export const optionsDb = {
     },
     
     /**
-     * Get specific options position by ID
+     * Retrieves a specific options position by ID
      */
     getPositionById(id: number): OptionsPosition | undefined {
         const stmt = db.prepare('SELECT * FROM options_positions WHERE id = ?');
@@ -278,7 +281,7 @@ export const optionsDb = {
     },
     
     /**
-     * Get matching open options position
+     * Finds existing options position with matching attributes
      */
     getMatchingPosition(
         userId: string, 
@@ -306,7 +309,7 @@ export const optionsDb = {
     },
     
     /**
-     * Create a new options position
+     * Creates a new options position
      */
     createPosition(
         userId: string, 
@@ -343,7 +346,7 @@ export const optionsDb = {
     },
     
     /**
-     * Update an existing options position
+     * Updates quantity and pricing for an existing options position
      */
     updatePosition(
         positionId: number,
@@ -360,7 +363,7 @@ export const optionsDb = {
     },
     
     /**
-     * Update position status
+     * Updates the status of an options position
      */
     updatePositionStatus(positionId: number, status: 'open' | 'closed' | 'expired' | 'exercised' | 'liquidated'): void {
         const stmt = db.prepare('UPDATE options_positions SET status = ? WHERE id = ?');
@@ -368,7 +371,7 @@ export const optionsDb = {
     },
     
     /**
-     * Update position secured status
+     * Updates whether an options position is covered/secured
      */
     updatePositionSecuredStatus(positionId: number, isSecured: boolean): void {
         const stmt = db.prepare('UPDATE options_positions SET isSecured = ? WHERE id = ?');
@@ -376,7 +379,7 @@ export const optionsDb = {
     },
     
     /**
-     * Get soon-to-expire options
+     * Finds options positions nearing expiration
      */
     getExpiringPositions(daysToExpiration = 1): OptionsPosition[] {
         const stmt = db.prepare(`
@@ -388,7 +391,7 @@ export const optionsDb = {
     },
     
     /**
-     * Get expired options that need processing
+     * Finds options positions that have expired and need processing
      */
     getExpiredPositions(): OptionsPosition[] {
         const stmt = db.prepare(`
@@ -399,7 +402,7 @@ export const optionsDb = {
     },
     
     /**
-     * Get total margin requirements for a user's options positions
+     * Calculates total margin requirements for a user
      */
     getTotalMarginRequirements(userId: string): number {
         const stmt = db.prepare(`
@@ -412,8 +415,7 @@ export const optionsDb = {
     },
     
     /**
-     * Get options positions for a specific symbol
-     * Used for checking covered calls and cash-secured puts
+     * Finds all options positions for a specific underlying symbol
      */
     getPositionsBySymbol(userId: string, symbol: string): OptionsPosition[] {
         const stmt = db.prepare(`
@@ -424,7 +426,7 @@ export const optionsDb = {
     },
     
     /**
-     * Add an options transaction
+     * Records an options transaction
      */
     addTransaction(
         userId: string, 
@@ -464,7 +466,7 @@ export const optionsDb = {
     },
     
     /**
-     * Get transaction history for a user
+     * Retrieves options transaction history
      */
     getUserTransactions(userId: string, limit = 10): OptionsTransaction[] {
         const stmt = db.prepare(`
@@ -477,8 +479,7 @@ export const optionsDb = {
     },
     
     /**
-     * Get all active short positions for a user
-     * Used for margin calculations and liquidation
+     * Retrieves all active short options positions for a user
      */
     getActiveShortPositions(userId: string): OptionsPosition[] {
         const stmt = db.prepare(`
@@ -490,8 +491,7 @@ export const optionsDb = {
     },
     
     /**
-     * Get all unique userIds that have open option positions
-     * Used for batch processing margin calls
+     * Finds all users with open options positions
      */
     getUsersWithOpenPositions(): string[] {
         const stmt = db.prepare(`
@@ -504,11 +504,11 @@ export const optionsDb = {
 };
 
 /**
- * Margin call database operations
+ * Margin call management operations
  */
 export const marginDb = {
     /**
-     * Create a margin call for a user
+     * Creates a margin call for a user
      */
     createMarginCall(userId: string, amount: number, reason: string): number {
         const stmt = db.prepare(`
@@ -520,7 +520,7 @@ export const marginDb = {
     },
     
     /**
-     * Get pending margin calls for a user
+     * Retrieves unresolved margin calls for a user
      */
     getPendingMarginCalls(userId: string): MarginCall[] {
         const stmt = db.prepare(`
@@ -532,7 +532,7 @@ export const marginDb = {
     },
     
     /**
-     * Resolve a margin call
+     * Marks a margin call as resolved
      */
     resolveMarginCall(marginCallId: number, status: 'satisfied' | 'liquidated'): void {
         const stmt = db.prepare(`
@@ -544,7 +544,7 @@ export const marginDb = {
     },
     
     /**
-     * Get all pending margin calls
+     * Retrieves all unresolved margin calls in the system
      */
     getAllPendingMarginCalls(): MarginCall[] {
         const stmt = db.prepare(`
@@ -556,7 +556,7 @@ export const marginDb = {
     },
     
     /**
-     * Get margin call history for a user
+     * Retrieves margin call history for a user
      */
     getMarginCallHistory(userId: string, limit = 10): MarginCall[] {
         const stmt = db.prepare(`
@@ -570,7 +570,7 @@ export const marginDb = {
 };
 
 /**
- * Price cache database operations
+ * Price caching system for historical and current prices
  */
 export interface PriceCache {
     id?: number;
@@ -583,7 +583,7 @@ export interface PriceCache {
 
 export const priceCacheDb = {
     /**
-     * Store price data in cache
+     * Stores a price data point in the cache
      */
     storePrice(
         symbol: string,
@@ -592,7 +592,6 @@ export const priceCacheDb = {
         timestamp: Date = new Date(),
         interval: string = '1m'
     ): void {
-        // Round timestamp based on the interval
         const roundedTimestamp = this.roundTimestampByInterval(timestamp, interval);
         const timestampString = roundedTimestamp.toISOString();
         
@@ -611,7 +610,7 @@ export const priceCacheDb = {
     },
 
     /**
-     * Store multiple price entries at once (batch insert)
+     * Efficiently stores multiple price entries in a single transaction
      */
     storePriceBatch(prices: Array<{
         symbol: string;
@@ -645,37 +644,31 @@ export const priceCacheDb = {
     },
     
     /**
-     * Round a timestamp based on the interval
+     * Normalizes timestamps to consistent intervals for better data alignment
      */
     roundTimestampByInterval(timestamp: Date, interval: string): Date {
         const date = new Date(timestamp);
         
         switch (interval) {
             case '1m':
-                // Round to the minute
                 date.setSeconds(0, 0);
                 break;
             case '5m':
-                // Round to the nearest 5 minutes
                 const minutes5 = Math.floor(date.getMinutes() / 5) * 5;
                 date.setMinutes(minutes5, 0, 0);
                 break;
             case '15m':
-                // Round to the nearest 15 minutes
                 const minutes15 = Math.floor(date.getMinutes() / 15) * 15;
                 date.setMinutes(minutes15, 0, 0);
                 break;
             case '30m':
-                // Round to the nearest 30 minutes
                 const minutes30 = Math.floor(date.getMinutes() / 30) * 30;
                 date.setMinutes(minutes30, 0, 0);
                 break;
             case '1h':
-                // Round to the hour
                 date.setMinutes(0, 0, 0);
                 break;
             case '1d':
-                // Round to the day
                 date.setHours(0, 0, 0, 0);
                 break;
         }

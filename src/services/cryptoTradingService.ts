@@ -2,17 +2,17 @@ import { coinGeckoService } from './coinGeckoService';
 import { cryptoPortfolioDb, cryptoTransactionDb, userDb } from '../database/operations';
 import { formatCurrency, formatCryptoAmount, formatCryptoPrice } from '../utils/formatters';
 
-// Constants for safety limits
+// Safety limits to prevent unreasonable transactions
 const MAX_TRANSACTION_VALUE_USD = 100000000000; // $100 billion max transaction
-const MIN_COIN_PRICE_USD = 0.000001; // Minimum price to consider valid (prevent division by zero issues)
+const MIN_COIN_PRICE_USD = 0.000001; // Prevents division by zero and unreasonable quantities
 const MAX_COIN_QUANTITY = 1000000000000; // 1 trillion units max in a single transaction
-const MIN_POSITION_VALUE_USD = 0.01; // Positions worth less than 1 cent are considered dust
-// Maximum precision to use for crypto calculations
+const MIN_POSITION_VALUE_USD = 0.01; // Threshold for dust position cleanup
+// Precision for cryptocurrency calculations
 const CRYPTO_PRECISION = 12;
 
 export const cryptoTradingService = {
   /**
-   * Get the current price of a cryptocurrency.
+   * Fetches current market price for a cryptocurrency
    */
   async getPrice(coinId: string): Promise<number> {
     try {
@@ -28,7 +28,7 @@ export const cryptoTradingService = {
   },
 
   /**
-   * Get prices for multiple cryptocurrencies at once.
+   * Efficiently fetches prices for multiple cryptocurrencies in a single API call
    */
   async getMultiplePrices(coinIds: string[]): Promise<{ [id: string]: number }> {
     try {
@@ -51,16 +51,16 @@ export const cryptoTradingService = {
   },
 
   /**
-   * Buy a cryptocurrency using paper trading.
+   * Executes cryptocurrency purchase with high-precision calculations
+   * Handles weighted average position pricing and validates against safety limits
    */
   async buyCrypto(userId: string, coinId: string, amountUsd: number): Promise<{ success: boolean; message: string; amount?: number; price?: number }> {
     try {
-      // Check if amount is valid
+      // Safety validations
       if (amountUsd <= 0) {
         return { success: false, message: 'Amount must be greater than 0' };
       }
 
-      // Enforce maximum transaction value
       if (amountUsd > MAX_TRANSACTION_VALUE_USD) {
         return { 
           success: false, 
@@ -68,10 +68,8 @@ export const cryptoTradingService = {
         };
       }
 
-      // Get the current price
       const price = await this.getPrice(coinId);
       
-      // Validate price
       if (!price) {
         return { success: false, message: `Couldn't get a valid price for ${coinId}` };
       }
@@ -83,11 +81,9 @@ export const cryptoTradingService = {
         };
       }
 
-      // Calculate the amount of crypto to buy
-      // Using full precision for this calculation
+      // Calculate quantity with high precision
       const amount = amountUsd / price;
       
-      // Check for unreasonable quantity due to very low price
       if (amount > MAX_COIN_QUANTITY) {
         return { 
           success: false, 
@@ -95,15 +91,13 @@ export const cryptoTradingService = {
         };
       }
       
-      // Get current user balance
       const cashBalance = userDb.getCashBalance(userId);
       
-      // Check if user has enough cash
       if (cashBalance < amountUsd) {
         return { success: false, message: `Insufficient funds. You have $${cashBalance.toFixed(2)}` };
       }
       
-      // Get coin details - we'll try to find the full name, or default to the coinId
+      // Retrieve token metadata
       let symbol = coinId;
       let name = coinId;
       
@@ -117,28 +111,23 @@ export const cryptoTradingService = {
         console.warn(`Failed to get coin details for ${coinId}, using ID as name`);
       }
 
-      // Get existing position or create new one
+      // Update position with weighted average pricing
       const position = cryptoPortfolioDb.getUserPosition(userId, coinId);
-      
       let newQuantity, newAvgPrice;
       
-      // Maintain maximum precision for all crypto calculations
       if (position) {
-        // Calculate with maximum precision to avoid rounding errors
-        // Use highest available precision for intermediate calculations
+        // Use high-precision calculations for existing positions
         const positionQuantity = Number(position.quantity.toFixed(CRYPTO_PRECISION));
         const positionAvgPrice = Number(position.averagePurchasePrice.toFixed(CRYPTO_PRECISION));
         const purchaseAmount = Number(amount.toFixed(CRYPTO_PRECISION));
         const purchasePrice = Number(price.toFixed(CRYPTO_PRECISION));
         
-        // Update existing position with weighted average price
         const totalValue = (positionQuantity * positionAvgPrice) + (purchaseAmount * purchasePrice);
         newQuantity = positionQuantity + purchaseAmount;
         
-        // Ensure we don't divide by zero or get NaN
         if (newQuantity > 0) {
           newAvgPrice = totalValue / newQuantity;
-          // Check for NaN or Infinity due to floating point precision issues
+          // Handle floating point precision issues
           if (isNaN(newAvgPrice) || !isFinite(newAvgPrice)) {
             console.warn(`Got invalid average price (${newAvgPrice}) for ${coinId}, using current price instead`);
             newAvgPrice = purchasePrice;
@@ -147,33 +136,14 @@ export const cryptoTradingService = {
           newAvgPrice = purchasePrice;
         }
       } else {
-        // For new positions, store quantities with full precision available
+        // New position initialization
         newQuantity = Number(amount.toFixed(CRYPTO_PRECISION));
         newAvgPrice = Number(price.toFixed(CRYPTO_PRECISION));
       }
       
-      // Update position
-      cryptoPortfolioDb.updatePosition(
-        userId,
-        coinId,
-        symbol,
-        name,
-        newQuantity,
-        newAvgPrice
-      );
-      
-      // Record transaction
-      cryptoTransactionDb.addTransaction(
-        userId,
-        coinId,
-        symbol,
-        name,
-        amount,
-        price,
-        'buy'
-      );
-      
-      // Deduct cash
+      // Persist changes and record the transaction
+      cryptoPortfolioDb.updatePosition(userId, coinId, symbol, name, newQuantity, newAvgPrice);
+      cryptoTransactionDb.addTransaction(userId, coinId, symbol, name, amount, price, 'buy');
       userDb.updateCashBalance(userId, cashBalance - amountUsd);
 
       return {
@@ -189,12 +159,8 @@ export const cryptoTradingService = {
   },
 
   /**
-   * Sell a cryptocurrency using paper trading.
-   * @param userId - The user ID of the seller
-   * @param coinId - The cryptocurrency ID to sell
-   * @param amount - The quantity of the cryptocurrency to sell (optional)
-   * @param amountUsd - The USD value of the cryptocurrency to sell (optional)
-   * @returns Transaction result object
+   * Executes cryptocurrency sales with support for quantity-based, USD-based,
+   * or entire position liquidation
    */
   async sellCrypto(
     userId: string, 
@@ -203,36 +169,33 @@ export const cryptoTradingService = {
     amountUsd?: number
   ): Promise<{ success: boolean; message: string; proceeds?: number; price?: number }> {
     try {
-      // Get user's holdings
       const position = cryptoPortfolioDb.getUserPosition(userId, coinId);
 
       if (!position || position.quantity <= 0) {
         return { success: false, message: `You don't own any ${coinId}` };
       }
 
-      // Get current price to support all selling methods
       const price = await this.getPrice(coinId);
       
-      // Determine amount to sell based on the inputs
+      // Determine sell quantity based on input parameters
       let amountToSell: number;
       
       if (amount !== undefined) {
-        // Specific quantity provided - store with high precision
+        // Sell specific quantity
         amountToSell = Number(amount.toFixed(CRYPTO_PRECISION));
       } else if (amountUsd !== undefined && amountUsd > 0) {
-        // USD value provided - calculate quantity with maximum precision
+        // Sell specific USD value
         amountToSell = Number((amountUsd / price).toFixed(CRYPTO_PRECISION));
         
-        // Ensure we don't exceed available quantity
         if (amountToSell > position.quantity) {
           amountToSell = Number(position.quantity.toFixed(CRYPTO_PRECISION));
         }
       } else {
-        // No specific amount - sell entire position with full precision
+        // Sell entire position
         amountToSell = Number(position.quantity.toFixed(CRYPTO_PRECISION));
       }
 
-      // Validate amount
+      // Validate sale parameters
       if (amountToSell <= 0) {
         return { success: false, message: 'Amount must be greater than 0' };
       }
@@ -241,37 +204,17 @@ export const cryptoTradingService = {
         return { success: false, message: `You only have ${formatCryptoAmount(position.quantity)} ${coinId}` };
       }
 
-      // Validate price
+      // Handle extremely low-value tokens specially
       if (price <= MIN_COIN_PRICE_USD) {
-        // For extremely low-value coins, liquidate the entire position at a minimum price
-        // This prevents positions getting "stuck" due to price being too low
+        // Liquidate worthless position at floor price
         const liquidationPrice = MIN_COIN_PRICE_USD;
         const liquidationProceeds = position.quantity * liquidationPrice;
         
         console.log(`Liquidating worthless position of ${coinId} (${position.quantity} units) at minimum price ${liquidationPrice}`);
         
-        // Remove the position entirely
-        cryptoPortfolioDb.updatePosition(
-          userId,
-          coinId,
-          position.symbol,
-          position.name,
-          0,
-          0
-        );
+        cryptoPortfolioDb.updatePosition(userId, coinId, position.symbol, position.name, 0, 0);
+        cryptoTransactionDb.addTransaction(userId, coinId, position.symbol, position.name, position.quantity, liquidationPrice, 'sell');
         
-        // Record the liquidation transaction
-        cryptoTransactionDb.addTransaction(
-          userId,
-          coinId,
-          position.symbol,
-          position.name,
-          position.quantity,
-          liquidationPrice,
-          'sell'
-        );
-        
-        // Add liquidation proceeds to user's cash
         const cashBalance = userDb.getCashBalance(userId);
         userDb.updateCashBalance(userId, cashBalance + liquidationProceeds);
         
@@ -283,10 +226,9 @@ export const cryptoTradingService = {
         };
       }
 
-      // Calculate proceeds with maximum precision
+      // Calculate sale proceeds with high precision
       const proceeds = Number((amountToSell * price).toFixed(CRYPTO_PRECISION));
       
-      // Prevent extremely large transactions in value
       if (proceeds > MAX_TRANSACTION_VALUE_USD) {
         return { 
           success: false, 
@@ -294,34 +236,13 @@ export const cryptoTradingService = {
         };
       }
 
-      // Update user's position with precise calculations
+      // Update position or remove if fully sold
       const newQuantity = Number((position.quantity - amountToSell).toFixed(CRYPTO_PRECISION));
-      
-      // Only use the old average price if we still have a position
-      // This preserves maximum precision for partial sells
       const newAvgPrice = newQuantity > 0 ? position.averagePurchasePrice : 0;
       
-      cryptoPortfolioDb.updatePosition(
-        userId,
-        coinId,
-        position.symbol,
-        position.name,
-        newQuantity,
-        newAvgPrice
-      );
+      cryptoPortfolioDb.updatePosition(userId, coinId, position.symbol, position.name, newQuantity, newAvgPrice);
+      cryptoTransactionDb.addTransaction(userId, coinId, position.symbol, position.name, amountToSell, price, 'sell');
       
-      // Record the transaction with full precision
-      cryptoTransactionDb.addTransaction(
-        userId,
-        coinId,
-        position.symbol,
-        position.name,
-        amountToSell,
-        price,
-        'sell'
-      );
-      
-      // Update cash balance
       const cashBalance = userDb.getCashBalance(userId);
       userDb.updateCashBalance(userId, cashBalance + proceeds);
 
@@ -338,31 +259,29 @@ export const cryptoTradingService = {
   },
 
   /**
-   * Get all cryptocurrency holdings for a user.
+   * Retrieves complete cryptocurrency portfolio with current market values
+   * and performance metrics
    */
   async getCryptoPortfolio(userId: string): Promise<any[]> {
     try {
-      // Get all holdings
       const holdings = await cryptoPortfolioDb.getUserPortfolio(userId);
 
       if (holdings.length === 0) {
         return [];
       }
 
-      // Get current prices for all holdings at once
+      // Fetch all prices in a single API call for efficiency
       const coinIds = holdings.map(h => h.coinId);
       const prices = await this.getMultiplePrices(coinIds);
       
-      // Calculate current values with maximum precision
+      // Calculate portfolio metrics with high precision
       return holdings.map(holding => {
         const price = prices[holding.coinId] || 0;
         
-        // Use highest precision for all calculations
         const quantity = Number(holding.quantity.toFixed(CRYPTO_PRECISION));
         const avgPrice = Number(holding.averagePurchasePrice.toFixed(CRYPTO_PRECISION));
         const currentPrice = Number(price.toFixed(CRYPTO_PRECISION));
         
-        // Calculate with maximum precision to preserve small decimal values
         const currentValue = quantity * currentPrice;
         const costBasis = quantity * avgPrice;
         const profitLoss = currentValue - costBasis;
@@ -388,7 +307,7 @@ export const cryptoTradingService = {
   },
 
   /**
-   * Get cryptocurrency transaction history for a user.
+   * Retrieves cryptocurrency transaction history
    */
   async getCryptoTransactionHistory(userId: string): Promise<any[]> {
     try {
@@ -400,22 +319,19 @@ export const cryptoTradingService = {
   },
 
   /**
-   * Get the total value of a user's crypto portfolio
+   * Calculates total value of all cryptocurrency holdings
    */
   async getTotalPortfolioValue(userId: string): Promise<{ success: boolean; totalValue: number; message?: string }> {
     try {
-      // Get user's crypto holdings
       const positions = cryptoPortfolioDb.getUserPortfolio(userId);
 
       if (!positions || positions.length === 0) {
         return { success: true, totalValue: 0, message: 'No crypto holdings found' };
       }
 
-      // Get the current prices for all cryptocurrencies
       const coinIds = positions.map(pos => pos.coinId);
       const prices = await this.getMultiplePrices(coinIds);
       
-      // Calculate total portfolio value
       let totalValue = 0;
       
       for (const position of positions) {
@@ -437,7 +353,7 @@ export const cryptoTradingService = {
   },
 
   /**
-   * Search for cryptocurrencies by name or symbol
+   * Searches for cryptocurrencies by name or symbol
    */
   async searchCryptos(query: string): Promise<any[]> {
     try {
@@ -449,7 +365,7 @@ export const cryptoTradingService = {
   },
 
   /**
-   * Get top cryptocurrencies by market cap
+   * Retrieves top cryptocurrencies by market capitalization
    */
   async getTopCryptos(limit: number = 20): Promise<any[]> {
     try {
@@ -461,14 +377,10 @@ export const cryptoTradingService = {
   },
 
   /**
-   * Get historical price data for a cryptocurrency
-   * @param symbol The cryptocurrency symbol (e.g., "bitcoin")
-   * @param days Number of days of historical data to retrieve
-   * @returns Array of historical price points or null if an error occurs
+   * Retrieves historical price data for charting and analysis
    */
   async getHistoricalPrices(symbol: string, days: number = 7): Promise<any[] | null> {
     try {
-      // Use coinGeckoService to get historical price data
       const historicalData = await coinGeckoService.getHistoricalPrices(symbol, days);
       
       if (!historicalData || !historicalData.prices) {
@@ -476,8 +388,7 @@ export const cryptoTradingService = {
         return null;
       }
       
-      // Transform the data into the required format
-      // Each item in prices is an array where the first element is timestamp and second is price
+      // Format timestamp-price pairs for charting
       const formattedData = historicalData.prices.map((item: [number, number]) => {
         return {
           timestamp: new Date(item[0]).toISOString(),
@@ -493,11 +404,8 @@ export const cryptoTradingService = {
   },
 
   /**
-   * Clean up worthless positions (dust).
-   * This method looks for positions with negligible value and liquidates them.
-   * 
-   * @param userId User ID whose portfolio to clean
-   * @returns Object containing number of positions cleaned and total credited value
+   * Automatically liquidates tiny value "dust" positions and those with 
+   * excessive quantities to prevent portfolio pollution
    */
   async cleanupWorthlessPositions(userId: string): Promise<{ 
     success: boolean; 
@@ -506,7 +414,6 @@ export const cryptoTradingService = {
     message: string;
   }> {
     try {
-      // Get user's crypto holdings
       const positions = cryptoPortfolioDb.getUserPortfolio(userId);
 
       if (!positions || positions.length === 0) {
@@ -518,7 +425,6 @@ export const cryptoTradingService = {
         };
       }
 
-      // Get current prices for all positions
       const coinIds = positions.map(pos => pos.coinId);
       const prices = await this.getMultiplePrices(coinIds);
       
@@ -526,25 +432,21 @@ export const cryptoTradingService = {
       let totalCredited = 0;
       const liquidationDetails: string[] = [];
       
-      // Check each position
+      // Identify and liquidate worthless positions
       for (const position of positions) {
-        // If no price found, liquidate at minimum price
         const price = prices[position.coinId] || MIN_COIN_PRICE_USD;
         const positionValue = position.quantity * price;
         
-        // If position value is very small or quantity is absurdly large
         if (positionValue < MIN_POSITION_VALUE_USD || position.quantity > MAX_COIN_QUANTITY) {
           const liquidationPrice = Math.max(price, MIN_COIN_PRICE_USD);
           const liquidationValue = position.quantity * liquidationPrice;
           
-          // Record the reason for liquidation
           const reason = positionValue < MIN_POSITION_VALUE_USD 
             ? 'dust position (below minimum value threshold)'
             : 'excessive quantity';
             
           console.log(`Liquidating ${position.coinId} position for user ${userId}: ${position.quantity} units worth ${positionValue}. Reason: ${reason}`);
           
-          // Record the transaction
           cryptoTransactionDb.addTransaction(
             userId,
             position.coinId,
@@ -555,7 +457,6 @@ export const cryptoTradingService = {
             'sell'
           );
           
-          // Remove the position entirely
           cryptoPortfolioDb.updatePosition(
             userId,
             position.coinId,
@@ -565,14 +466,13 @@ export const cryptoTradingService = {
             0
           );
           
-          // Track for summary
           positionsLiquidated++;
           totalCredited += liquidationValue;
           liquidationDetails.push(`${position.name} (${position.symbol}): ${position.quantity.toExponential(2)} units for ${formatCurrency(liquidationValue)} - Reason: ${reason}`);
         }
       }
       
-      // If any positions were liquidated, update the user's cash balance
+      // Credit user with liquidation proceeds
       if (positionsLiquidated > 0) {
         const cashBalance = userDb.getCashBalance(userId);
         userDb.updateCashBalance(userId, cashBalance + totalCredited);
