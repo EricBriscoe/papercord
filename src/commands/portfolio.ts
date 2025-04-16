@@ -681,7 +681,7 @@ async function showCryptoView(interaction: ChatInputCommandInteraction, portfoli
             // Ensure values are numbers and not NaN
             const quantity = isNaN(pos.quantity) ? 0 : pos.quantity;
             const currentPrice = isNaN(pos.currentPrice) ? 0 : (pos.currentPrice || 0);
-            const marketValue = isNaN(pos.marketValue) ? 0 : (pos.marketValue || 0);
+            const marketValue = isNaN(pos.marketValue) ? (isNaN(pos.currentValue) ? 0 : pos.currentValue) : pos.marketValue;
             const avgPurchasePrice = isNaN(pos.averagePurchasePrice) ? 0 : pos.averagePurchasePrice;
             const profitLoss = isNaN(pos.profitLoss) ? 0 : (pos.profitLoss || 0);
             const profitLossPercentage = isNaN(pos.profitLossPercentage) ? 0 : (pos.profitLossPercentage || 0);
