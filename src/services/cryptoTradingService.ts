@@ -1,12 +1,14 @@
 import { coinGeckoService } from './coinGeckoService';
 import { cryptoPortfolioDb, cryptoTransactionDb, userDb } from '../database/operations';
-import { formatCurrency } from '../utils/formatters';
+import { formatCurrency, formatCryptoAmount, formatCryptoPrice } from '../utils/formatters';
 
 // Constants for safety limits
 const MAX_TRANSACTION_VALUE_USD = 100000000000; // $100 billion max transaction
 const MIN_COIN_PRICE_USD = 0.000001; // Minimum price to consider valid (prevent division by zero issues)
 const MAX_COIN_QUANTITY = 1000000000000; // 1 trillion units max in a single transaction
 const MIN_POSITION_VALUE_USD = 0.01; // Positions worth less than 1 cent are considered dust
+// Maximum precision to use for crypto calculations
+const CRYPTO_PRECISION = 12;
 
 export const cryptoTradingService = {
   /**
@@ -82,6 +84,7 @@ export const cryptoTradingService = {
       }
 
       // Calculate the amount of crypto to buy
+      // Using full precision for this calculation
       const amount = amountUsd / price;
       
       // Check for unreasonable quantity due to very low price
@@ -119,14 +122,34 @@ export const cryptoTradingService = {
       
       let newQuantity, newAvgPrice;
       
+      // Maintain maximum precision for all crypto calculations
       if (position) {
+        // Calculate with maximum precision to avoid rounding errors
+        // Use highest available precision for intermediate calculations
+        const positionQuantity = Number(position.quantity.toFixed(CRYPTO_PRECISION));
+        const positionAvgPrice = Number(position.averagePurchasePrice.toFixed(CRYPTO_PRECISION));
+        const purchaseAmount = Number(amount.toFixed(CRYPTO_PRECISION));
+        const purchasePrice = Number(price.toFixed(CRYPTO_PRECISION));
+        
         // Update existing position with weighted average price
-        const totalValue = position.quantity * position.averagePurchasePrice + amount * price;
-        newQuantity = position.quantity + amount;
-        newAvgPrice = totalValue / newQuantity;
+        const totalValue = (positionQuantity * positionAvgPrice) + (purchaseAmount * purchasePrice);
+        newQuantity = positionQuantity + purchaseAmount;
+        
+        // Ensure we don't divide by zero or get NaN
+        if (newQuantity > 0) {
+          newAvgPrice = totalValue / newQuantity;
+          // Check for NaN or Infinity due to floating point precision issues
+          if (isNaN(newAvgPrice) || !isFinite(newAvgPrice)) {
+            console.warn(`Got invalid average price (${newAvgPrice}) for ${coinId}, using current price instead`);
+            newAvgPrice = purchasePrice;
+          }
+        } else {
+          newAvgPrice = purchasePrice;
+        }
       } else {
-        newQuantity = amount;
-        newAvgPrice = price;
+        // For new positions, store quantities with full precision available
+        newQuantity = Number(amount.toFixed(CRYPTO_PRECISION));
+        newAvgPrice = Number(price.toFixed(CRYPTO_PRECISION));
       }
       
       // Update position
@@ -155,7 +178,7 @@ export const cryptoTradingService = {
 
       return {
         success: true,
-        message: `Successfully bought ${amount.toFixed(8)} ${name} (${symbol}) at $${price.toFixed(2)}`,
+        message: `Successfully bought ${formatCryptoAmount(amount)} ${name} (${symbol}) at ${formatCryptoPrice(price)}`,
         amount,
         price,
       };
@@ -194,19 +217,19 @@ export const cryptoTradingService = {
       let amountToSell: number;
       
       if (amount !== undefined) {
-        // Specific quantity provided
-        amountToSell = amount;
+        // Specific quantity provided - store with high precision
+        amountToSell = Number(amount.toFixed(CRYPTO_PRECISION));
       } else if (amountUsd !== undefined && amountUsd > 0) {
-        // USD value provided - calculate quantity
-        amountToSell = amountUsd / price;
+        // USD value provided - calculate quantity with maximum precision
+        amountToSell = Number((amountUsd / price).toFixed(CRYPTO_PRECISION));
         
         // Ensure we don't exceed available quantity
         if (amountToSell > position.quantity) {
-          amountToSell = position.quantity;
+          amountToSell = Number(position.quantity.toFixed(CRYPTO_PRECISION));
         }
       } else {
-        // No specific amount - sell entire position
-        amountToSell = position.quantity;
+        // No specific amount - sell entire position with full precision
+        amountToSell = Number(position.quantity.toFixed(CRYPTO_PRECISION));
       }
 
       // Validate amount
@@ -215,7 +238,7 @@ export const cryptoTradingService = {
       }
 
       if (amountToSell > position.quantity) {
-        return { success: false, message: `You only have ${position.quantity} ${coinId}` };
+        return { success: false, message: `You only have ${formatCryptoAmount(position.quantity)} ${coinId}` };
       }
 
       // Validate price
@@ -260,8 +283,8 @@ export const cryptoTradingService = {
         };
       }
 
-      // Calculate proceeds
-      const proceeds = amountToSell * price;
+      // Calculate proceeds with maximum precision
+      const proceeds = Number((amountToSell * price).toFixed(CRYPTO_PRECISION));
       
       // Prevent extremely large transactions in value
       if (proceeds > MAX_TRANSACTION_VALUE_USD) {
@@ -271,9 +294,12 @@ export const cryptoTradingService = {
         };
       }
 
-      // Update user's position
-      const newQuantity = position.quantity - amountToSell;
-      const newAvgPrice = position.quantity !== amountToSell ? position.averagePurchasePrice : 0;
+      // Update user's position with precise calculations
+      const newQuantity = Number((position.quantity - amountToSell).toFixed(CRYPTO_PRECISION));
+      
+      // Only use the old average price if we still have a position
+      // This preserves maximum precision for partial sells
+      const newAvgPrice = newQuantity > 0 ? position.averagePurchasePrice : 0;
       
       cryptoPortfolioDb.updatePosition(
         userId,
@@ -284,7 +310,7 @@ export const cryptoTradingService = {
         newAvgPrice
       );
       
-      // Record the transaction
+      // Record the transaction with full precision
       cryptoTransactionDb.addTransaction(
         userId,
         coinId,
@@ -301,7 +327,7 @@ export const cryptoTradingService = {
 
       return {
         success: true,
-        message: `Successfully sold ${amountToSell.toFixed(8)} ${position.name || coinId} at ${formatCurrency(price)} for ${formatCurrency(proceeds)}`,
+        message: `Successfully sold ${formatCryptoAmount(amountToSell)} ${position.name || coinId} at ${formatCryptoPrice(price)} for ${formatCurrency(proceeds)}`,
         proceeds,
         price,
       };
@@ -327,11 +353,18 @@ export const cryptoTradingService = {
       const coinIds = holdings.map(h => h.coinId);
       const prices = await this.getMultiplePrices(coinIds);
       
-      // Calculate current values
+      // Calculate current values with maximum precision
       return holdings.map(holding => {
         const price = prices[holding.coinId] || 0;
-        const currentValue = holding.quantity * price;
-        const costBasis = holding.quantity * holding.averagePurchasePrice;
+        
+        // Use highest precision for all calculations
+        const quantity = Number(holding.quantity.toFixed(CRYPTO_PRECISION));
+        const avgPrice = Number(holding.averagePurchasePrice.toFixed(CRYPTO_PRECISION));
+        const currentPrice = Number(price.toFixed(CRYPTO_PRECISION));
+        
+        // Calculate with maximum precision to preserve small decimal values
+        const currentValue = quantity * currentPrice;
+        const costBasis = quantity * avgPrice;
         const profitLoss = currentValue - costBasis;
         const profitLossPercent = costBasis > 0 ? (profitLoss / costBasis) * 100 : 0;
 
@@ -339,12 +372,13 @@ export const cryptoTradingService = {
           coinId: holding.coinId,
           symbol: holding.symbol,
           name: holding.name,
-          quantity: holding.quantity,
-          currentPrice: price,
-          currentValue,
-          costBasis,
-          profitLoss,
-          profitLossPercent,
+          quantity: quantity,
+          averagePurchasePrice: avgPrice,
+          currentPrice: currentPrice,
+          currentValue: currentValue,
+          costBasis: costBasis,
+          profitLoss: profitLoss,
+          profitLossPercent: profitLossPercent,
         };
       });
     } catch (error) {
