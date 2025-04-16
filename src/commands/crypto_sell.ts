@@ -3,7 +3,7 @@ import { Command } from '../models/command';
 import { coinGeckoService } from '../services/coinGeckoService';
 import { cryptoTradingService } from '../services/cryptoTradingService';
 import { cryptoPortfolioDb } from '../database/operations';
-import { formatCurrency } from '../utils/formatters';
+import { formatCurrency, formatTimestamp } from '../utils/formatters';
 
 export const cryptoSellCommand: Command = {
     name: 'crypto_sell',
@@ -29,7 +29,7 @@ export const cryptoSellCommand: Command = {
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction): Promise<void> => {
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply();
         
         try {
             const userId = interaction.user.id;
@@ -465,6 +465,9 @@ async function confirmAndSell(
                             inline: true
                         }
                     ])
+                    .setFooter({ 
+                        text: `Transaction time: ${formatTimestamp(new Date())}` 
+                    })
                     .setTimestamp();
                 
                 // Show remaining position if not selling all
@@ -479,7 +482,12 @@ async function confirmAndSell(
                     }
                 }
                 
-                await interaction.editReply({ embeds: [embed], components: [] });
+                // Update with final non-ephemeral message, visible in the channel
+                await interaction.editReply({
+                    content: null,
+                    embeds: [embed],
+                    components: []
+                });
             } else {
                 // Cancel the transaction
                 await interaction.editReply({
