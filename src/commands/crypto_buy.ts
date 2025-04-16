@@ -26,12 +26,6 @@ export const cryptoBuyCommand: Command = {
             description: 'Quantity of cryptocurrency to buy (e.g., 0.5)',
             type: ApplicationCommandOptionType.Number,
             required: false
-        },
-        {
-            name: 'max_price',
-            description: 'Maximum price per coin you are willing to pay (limit order)',
-            type: ApplicationCommandOptionType.Number,
-            required: false
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction): Promise<void> => {
@@ -42,9 +36,8 @@ export const cryptoBuyCommand: Command = {
             const coinQuery = interaction.options.getString('coin', true);
             const amountUsd = interaction.options.getNumber('amount');
             const quantity = interaction.options.getNumber('quantity');
-            const maxPrice = interaction.options.getNumber('max_price');
             
-            // Validate inputs - need either amount or quantity
+            // Input validation
             if (!amountUsd && !quantity) {
                 await interaction.editReply('Please specify either the amount in USD or the quantity of cryptocurrency to buy.');
                 return;
@@ -60,7 +53,6 @@ export const cryptoBuyCommand: Command = {
                 return;
             }
             
-            // Search for the cryptocurrency
             const searchResults = await coinGeckoService.searchCoins(coinQuery);
             
             if (searchResults.length === 0) {
@@ -68,14 +60,13 @@ export const cryptoBuyCommand: Command = {
                 return;
             }
             
-            // If there's only one result, proceed directly to confirmation
+            // Skip selection menu if only one result found
             if (searchResults.length === 1) {
-                await handleCoinSelection(interaction, searchResults[0], amountUsd, quantity, maxPrice);
+                await handleCoinSelection(interaction, searchResults[0], amountUsd, quantity);
                 return;
             }
             
-            // Multiple matches found - show selection menu
-            // Limit to top 25 matches to ensure it fits in a Discord menu
+            // Create selection menu for multiple matches (limited to 25 for Discord UI)
             const coinOptions = searchResults.slice(0, 25).map(coin => {
                 return new StringSelectMenuOptionBuilder()
                     .setLabel(`${coin.name} (${coin.symbol.toUpperCase()})`)
@@ -96,14 +87,13 @@ export const cryptoBuyCommand: Command = {
                 components: [row]
             });
             
-            // Create collector for the select menu interaction
+            // Set up interactive menu with timeout
             const collector = response.createMessageComponentCollector({
                 componentType: ComponentType.StringSelect,
-                time: 3 * 60 * 1000, // 3 minute timeout
+                time: 3 * 60 * 1000 // 3 minute timeout
             });
             
             collector.on('collect', async (i) => {
-                // Make sure it's the same user who initiated the command
                 if (i.user.id !== userId) {
                     await i.reply({ content: 'This selection menu is not for you.', ephemeral: true });
                     return;
@@ -119,19 +109,15 @@ export const cryptoBuyCommand: Command = {
                     return;
                 }
                 
-                // Handle the selected coin
-                await handleCoinSelection(interaction, selectedCoin, amountUsd, quantity, maxPrice);
-                
-                // End the collector since we've handled the selection
+                await handleCoinSelection(interaction, selectedCoin, amountUsd, quantity);
                 collector.stop();
             });
             
             collector.on('end', async (collected, reason) => {
-                // If the collector ended due to timeout and no selection was made
                 if (reason === 'time' && collected.size === 0) {
                     await interaction.editReply({
                         content: 'Cryptocurrency selection timed out. Please try again.',
-                        components: [] // Remove the components
+                        components: []
                     });
                 }
             });
@@ -144,17 +130,22 @@ export const cryptoBuyCommand: Command = {
 };
 
 /**
- * Handle coin selection and proceed to confirmation or execution
+ * Processes a selected cryptocurrency purchase
+ * 
+ * This function handles:
+ * 1. Fetching current price from CoinGecko
+ * 2. Calculating the purchase amount and quantity
+ * 3. Checking if user has sufficient funds
+ * 4. Displaying purchase confirmation UI
+ * 5. Processing the transaction if confirmed
  */
 async function handleCoinSelection(
     interaction: ChatInputCommandInteraction, 
     coin: { id: string; symbol: string; name: string }, 
     amountUsd: number | null, 
-    quantity: number | null,
-    maxPrice: number | null
+    quantity: number | null
 ): Promise<void> {
     try {
-        // Get current price
         const priceData = await coinGeckoService.getCoinPrice(coin.id);
         
         if (!priceData.price) {
@@ -164,13 +155,7 @@ async function handleCoinSelection(
         
         const currentPrice = priceData.price;
         
-        // Check max price if specified
-        if (maxPrice && currentPrice > maxPrice) {
-            await interaction.editReply(`Current price (${formatCurrency(currentPrice)}) is higher than your maximum price (${formatCurrency(maxPrice)}). Transaction not executed.`);
-            return;
-        }
-        
-        // Calculate quantity based on amount if amount is provided
+        // Calculate purchase details based on provided parameters
         let buyQuantity = quantity;
         let totalCost: number;
         
@@ -189,7 +174,7 @@ async function handleCoinSelection(
             return;
         }
         
-        // Get user's cash balance
+        // Verify sufficient funds
         const userId = interaction.user.id;
         const cashBalance = userDb.getCashBalance(userId);
         
@@ -198,7 +183,7 @@ async function handleCoinSelection(
             return;
         }
         
-        // Create confirmation embed
+        // Display purchase confirmation
         const confirmEmbed = new EmbedBuilder()
             .setTitle('Confirm Cryptocurrency Purchase')
             .setColor('#0099ff')
@@ -237,7 +222,7 @@ async function handleCoinSelection(
             .setFooter({ text: 'Please confirm or cancel this transaction.' })
             .setTimestamp();
         
-        // Create confirm/cancel buttons
+        // Create confirmation UI
         const confirmButton = new ButtonBuilder()
             .setCustomId('confirm_purchase')
             .setLabel('Confirm Purchase')
@@ -252,18 +237,18 @@ async function handleCoinSelection(
             .addComponents(confirmButton, cancelButton);
         
         const confirmMessage = await interaction.editReply({
+            content: null,
             embeds: [confirmEmbed],
             components: [row]
         });
         
-        // Create collector for button interaction
+        // Handle user's decision with a timeout
         const collector = confirmMessage.createMessageComponentCollector({
             componentType: ComponentType.Button,
-            time: 60000, // 1 minute timeout
+            time: 60000 // 1 minute timeout
         });
         
         collector.on('collect', async (i) => {
-            // Make sure it's the same user who initiated the command
             if (i.user.id !== userId) {
                 await i.reply({ content: 'These buttons are not for you.', ephemeral: true });
                 return;
@@ -272,14 +257,13 @@ async function handleCoinSelection(
             await i.deferUpdate();
             
             if (i.customId === 'confirm_purchase') {
-                // Execute buy operation
+                // Calculate final purchase amount if needed
                 let buyAmountUsd = amountUsd;
                 if (!buyAmountUsd && buyQuantity) {
-                    // If quantity is provided instead of amount, calculate the amount
                     buyAmountUsd = buyQuantity * currentPrice;
                 }
                 
-                // Execute buy operation
+                // Process the transaction
                 const result = await cryptoTradingService.buyCrypto(userId, coin.id, buyAmountUsd!);
                 
                 if (!result.success) {
@@ -290,7 +274,7 @@ async function handleCoinSelection(
                     return;
                 }
                 
-                // Create success embed
+                // Show transaction success details
                 const embed = new EmbedBuilder()
                     .setTitle('Cryptocurrency Purchase Successful')
                     .setColor('#00ff00')
@@ -328,9 +312,13 @@ async function handleCoinSelection(
                     ])
                     .setTimestamp();
                 
-                await interaction.editReply({ embeds: [embed], components: [] });
+                await interaction.editReply({ 
+                    content: null, 
+                    embeds: [embed], 
+                    components: [] 
+                });
             } else {
-                // Cancel the transaction
+                // Handle cancellation
                 await interaction.editReply({
                     content: 'Cryptocurrency purchase cancelled.',
                     embeds: [],
