@@ -1,4 +1,4 @@
-import { ApplicationCommandOptionType, ChatInputCommandInteraction, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ComponentType } from 'discord.js';
+import { ApplicationCommandOptionType, ChatInputCommandInteraction, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ComponentType, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { Command } from '../models/command';
 import { coinGeckoService } from '../services/coinGeckoService';
 import { cryptoTradingService } from '../services/cryptoTradingService';
@@ -10,6 +10,12 @@ export const cryptoSellCommand: Command = {
     description: 'Sell cryptocurrency from your portfolio',
     options: [
         {
+            name: 'amount_usd',
+            description: 'USD amount you want to sell (e.g., 50 to sell $50 worth of the cryptocurrency)',
+            type: ApplicationCommandOptionType.Number,
+            required: false
+        },
+        {
             name: 'quantity',
             description: 'Quantity of cryptocurrency to sell (e.g., 0.5) or leave blank to select from your portfolio',
             type: ApplicationCommandOptionType.String,
@@ -20,22 +26,16 @@ export const cryptoSellCommand: Command = {
             description: 'Sell your entire position in the selected cryptocurrency',
             type: ApplicationCommandOptionType.Boolean,
             required: false
-        },
-        {
-            name: 'min_price',
-            description: 'Minimum price per coin you are willing to accept (limit order)',
-            type: ApplicationCommandOptionType.Number,
-            required: false
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction): Promise<void> => {
-        await interaction.deferReply();
+        await interaction.deferReply({ ephemeral: true });
         
         try {
             const userId = interaction.user.id;
             const quantityInput = interaction.options.getString('quantity');
             const sellAllFlag = interaction.options.getBoolean('all') || false;
-            const minPrice = interaction.options.getNumber('min_price');
+            const amountUsd = interaction.options.getNumber('amount_usd') ?? undefined;
             
             let sellAll = sellAllFlag;
             let quantity: number | undefined = undefined;
@@ -78,6 +78,12 @@ export const cryptoSellCommand: Command = {
             
             // Sort by value (highest first)
             portfolioItems.sort((a, b) => b.currentValue - a.currentValue);
+            
+            // If user only has one cryptocurrency, skip the selection and proceed directly
+            if (portfolioItems.length === 1) {
+                await handleCoinSelection(interaction, portfolioItems[0], quantity, sellAll, amountUsd);
+                return;
+            }
             
             // Create selection menu options
             const coinOptions = portfolioItems.map(position => {
@@ -125,7 +131,7 @@ export const cryptoSellCommand: Command = {
                 }
                 
                 // Handle the selected cryptocurrency
-                await handleCoinSelection(interaction, position, quantity, sellAll, minPrice);
+                await handleCoinSelection(interaction, position, quantity, sellAll, amountUsd);
                 
                 // End the collector since we've handled the selection
                 collector.stop();
@@ -156,46 +162,36 @@ async function handleCoinSelection(
     position: any,
     quantity: number | undefined,
     sellAll: boolean,
-    minPrice: number | null
+    amountUsd: number | undefined
 ): Promise<void> {
     try {
         const userId = interaction.user.id;
         
         // If neither quantity nor sellAll is specified, ask for quantity now
-        if (!quantity && !sellAll) {
-            // Create a new menu with quantity options
-            const quantityMenu = new ActionRowBuilder<any>()
+        if (!quantity && !sellAll && !amountUsd) {
+            // Create a new menu with quantity options using ButtonBuilder
+            const quantityMenu = new ActionRowBuilder<ButtonBuilder>()
                 .addComponents(
-                    { 
-                        type: 2, 
-                        style: 1, 
-                        label: 'Sell 25%', 
-                        customId: 'sell_25_percent' 
-                    },
-                    { 
-                        type: 2, 
-                        style: 1, 
-                        label: 'Sell 50%', 
-                        customId: 'sell_50_percent' 
-                    },
-                    { 
-                        type: 2, 
-                        style: 1, 
-                        label: 'Sell 75%', 
-                        customId: 'sell_75_percent' 
-                    },
-                    { 
-                        type: 2, 
-                        style: 3, 
-                        label: 'Sell 100%', 
-                        customId: 'sell_100_percent' 
-                    },
-                    { 
-                        type: 2, 
-                        style: 4, 
-                        label: 'Cancel', 
-                        customId: 'cancel_sell' 
-                    }
+                    new ButtonBuilder()
+                        .setCustomId('sell_25_percent')
+                        .setLabel('Sell 25%')
+                        .setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder()
+                        .setCustomId('sell_50_percent')
+                        .setLabel('Sell 50%')
+                        .setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder()
+                        .setCustomId('sell_75_percent')
+                        .setLabel('Sell 75%')
+                        .setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder()
+                        .setCustomId('sell_100_percent')
+                        .setLabel('Sell 100%')
+                        .setStyle(ButtonStyle.Success),
+                    new ButtonBuilder()
+                        .setCustomId('cancel_sell')
+                        .setLabel('Cancel')
+                        .setStyle(ButtonStyle.Danger)
                 );
             
             const quantityMessage = await interaction.editReply({
@@ -250,7 +246,7 @@ async function handleCoinSelection(
                 }
                 
                 // Process the sale with confirmation
-                await confirmAndSell(interaction, position, sellQuantity, isSellAll, minPrice);
+                await confirmAndSell(interaction, position, sellQuantity, isSellAll, amountUsd);
                 
                 // End the collector since we've handled the selection
                 quantityCollector.stop();
@@ -276,7 +272,7 @@ async function handleCoinSelection(
             return;
         }
         
-        await confirmAndSell(interaction, position, sellQuantity!, sellAll, minPrice);
+        await confirmAndSell(interaction, position, sellQuantity!, sellAll, amountUsd);
         
     } catch (error) {
         console.error('Error handling coin selection for sell:', error);
@@ -290,9 +286,9 @@ async function handleCoinSelection(
 async function confirmAndSell(
     interaction: ChatInputCommandInteraction,
     position: any,
-    quantity: number,
+    quantity: number | undefined,
     sellAll: boolean,
-    minPrice: number | null
+    amountUsd: number | undefined
 ): Promise<void> {
     try {
         const userId = interaction.user.id;
@@ -307,14 +303,36 @@ async function confirmAndSell(
         
         const currentPrice = priceData.price;
         
-        // Check min price if specified
-        if (minPrice && currentPrice < minPrice) {
-            await interaction.editReply(`Current price (${formatCurrency(currentPrice)}) is lower than your minimum price (${formatCurrency(minPrice)}). Transaction not executed.`);
+        // Calculate quantity based on parameters
+        let finalQuantity: number;
+        let sellReason: string = '';
+        
+        if (sellAll) {
+            // Sell entire position
+            finalQuantity = position.quantity;
+            sellReason = 'Full Position';
+        } else if (amountUsd && amountUsd > 0) {
+            // Sell based on USD amount
+            finalQuantity = amountUsd / currentPrice;
+            if (finalQuantity > position.quantity) {
+                await interaction.editReply(`You only have ${position.quantity.toFixed(8)} ${position.symbol.toUpperCase()} (worth ${formatCurrency(position.quantity * currentPrice)}) available to sell.`);
+                return;
+            }
+            sellReason = `${formatCurrency(amountUsd)} worth`;
+        } else if (quantity) {
+            // Sell specific quantity
+            finalQuantity = quantity;
+            if (finalQuantity > position.quantity) {
+                await interaction.editReply(`You only have ${position.quantity.toFixed(8)} ${position.symbol.toUpperCase()} available to sell.`);
+                return;
+            }
+        } else {
+            await interaction.editReply('No valid sell amount specified. Please try again.');
             return;
         }
         
         // Calculate proceeds estimate for display
-        const estimatedProceeds = quantity * currentPrice;
+        const estimatedProceeds = finalQuantity * currentPrice;
         
         // Create confirmation embed
         const confirmEmbed = new EmbedBuilder()
@@ -333,7 +351,7 @@ async function confirmAndSell(
                 },
                 {
                     name: 'Quantity to Sell',
-                    value: sellAll ? `${quantity.toFixed(8)} (Full Position)` : quantity.toFixed(8),
+                    value: sellReason ? `${finalQuantity.toFixed(8)} (${sellReason})` : finalQuantity.toFixed(8),
                     inline: true
                 },
                 {
@@ -352,7 +370,7 @@ async function confirmAndSell(
         
         // Add profit/loss information
         const profitLossPerCoin = currentPrice - position.averagePurchasePrice;
-        const totalProfitLoss = profitLossPerCoin * quantity;
+        const totalProfitLoss = profitLossPerCoin * finalQuantity;
         const profitLossPercent = (profitLossPerCoin / position.averagePurchasePrice) * 100;
         
         confirmEmbed.addFields({
@@ -362,10 +380,16 @@ async function confirmAndSell(
         });
         
         // Create confirm/cancel buttons
-        const confirmButton = new ActionRowBuilder<any>()
+        const confirmButton = new ActionRowBuilder<ButtonBuilder>()
             .addComponents(
-                { type: 2, style: 3, label: 'Confirm Sale', customId: 'confirm_sale' },
-                { type: 2, style: 4, label: 'Cancel', customId: 'cancel_sale' }
+                new ButtonBuilder()
+                    .setCustomId('confirm_sale')
+                    .setLabel('Confirm Sale')
+                    .setStyle(ButtonStyle.Success),
+                new ButtonBuilder()
+                    .setCustomId('cancel_sale')
+                    .setLabel('Cancel')
+                    .setStyle(ButtonStyle.Danger)
             );
         
         const confirmMessage = await interaction.editReply({
@@ -393,7 +417,8 @@ async function confirmAndSell(
                 const result = await cryptoTradingService.sellCrypto(
                     userId,
                     position.coinId,
-                    sellAll ? undefined : quantity
+                    sellAll ? undefined : finalQuantity,
+                    amountUsd
                 );
                 
                 if (!result.success) {
@@ -421,7 +446,7 @@ async function confirmAndSell(
                         },
                         {
                             name: 'Quantity Sold',
-                            value: sellAll ? `${position.quantity.toFixed(8)} (Full Position)` : quantity.toFixed(8),
+                            value: sellAll ? `${position.quantity.toFixed(8)} (Full Position)` : finalQuantity.toFixed(8),
                             inline: true
                         },
                         {
@@ -444,7 +469,7 @@ async function confirmAndSell(
                 
                 // Show remaining position if not selling all
                 if (!sellAll) {
-                    const remainingQuantity = position.quantity - quantity;
+                    const remainingQuantity = position.quantity - finalQuantity;
                     if (remainingQuantity > 0) {
                         embed.addFields({
                             name: 'Remaining Position',

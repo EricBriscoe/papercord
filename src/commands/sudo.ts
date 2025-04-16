@@ -36,16 +36,16 @@ export const sudoCommand: Command = {
                     required: true
                 },
                 {
-                    name: 'starting_balance',
-                    description: 'Starting balance (default: $100,000)',
-                    type: ApplicationCommandOptionType.Number,
-                    required: false
-                },
-                {
                     name: 'confirm',
                     description: 'Type "confirm" to confirm the reset (this cannot be undone)',
                     type: ApplicationCommandOptionType.String,
                     required: true
+                },
+                {
+                    name: 'starting_balance',
+                    description: 'Starting balance (default: $100,000)',
+                    type: ApplicationCommandOptionType.Number,
+                    required: false
                 }
             ]
         },

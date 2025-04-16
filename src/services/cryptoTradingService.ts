@@ -167,8 +167,18 @@ export const cryptoTradingService = {
 
   /**
    * Sell a cryptocurrency using paper trading.
+   * @param userId - The user ID of the seller
+   * @param coinId - The cryptocurrency ID to sell
+   * @param amount - The quantity of the cryptocurrency to sell (optional)
+   * @param amountUsd - The USD value of the cryptocurrency to sell (optional)
+   * @returns Transaction result object
    */
-  async sellCrypto(userId: string, coinId: string, amount?: number): Promise<{ success: boolean; message: string; proceeds?: number; price?: number }> {
+  async sellCrypto(
+    userId: string, 
+    coinId: string, 
+    amount?: number, 
+    amountUsd?: number
+  ): Promise<{ success: boolean; message: string; proceeds?: number; price?: number }> {
     try {
       // Get user's holdings
       const position = cryptoPortfolioDb.getUserPosition(userId, coinId);
@@ -177,8 +187,27 @@ export const cryptoTradingService = {
         return { success: false, message: `You don't own any ${coinId}` };
       }
 
-      // If no amount specified, sell all
-      const amountToSell = amount !== undefined ? amount : position.quantity;
+      // Get current price to support all selling methods
+      const price = await this.getPrice(coinId);
+      
+      // Determine amount to sell based on the inputs
+      let amountToSell: number;
+      
+      if (amount !== undefined) {
+        // Specific quantity provided
+        amountToSell = amount;
+      } else if (amountUsd !== undefined && amountUsd > 0) {
+        // USD value provided - calculate quantity
+        amountToSell = amountUsd / price;
+        
+        // Ensure we don't exceed available quantity
+        if (amountToSell > position.quantity) {
+          amountToSell = position.quantity;
+        }
+      } else {
+        // No specific amount - sell entire position
+        amountToSell = position.quantity;
+      }
 
       // Validate amount
       if (amountToSell <= 0) {
@@ -189,9 +218,6 @@ export const cryptoTradingService = {
         return { success: false, message: `You only have ${position.quantity} ${coinId}` };
       }
 
-      // Get current price
-      const price = await this.getPrice(coinId);
-      
       // Validate price
       if (price <= MIN_COIN_PRICE_USD) {
         // For extremely low-value coins, liquidate the entire position at a minimum price
