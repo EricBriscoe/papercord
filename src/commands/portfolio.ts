@@ -63,6 +63,12 @@ export const portfolioCommand: Command = {
                     value: PortfolioView.CRYPTO
                 }
             ]
+        },
+        {
+            name: 'user',
+            description: 'User ID to look up (default: yourself)',
+            type: ApplicationCommandOptionType.String,
+            required: false
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction) => {
@@ -72,9 +78,26 @@ export const portfolioCommand: Command = {
             // Determine which view the user requested
             const viewOption = interaction.options.getString('view') || PortfolioView.SUMMARY;
             
+            // Get target user ID - either the provided ID or the current user's ID
+            const targetUserId = interaction.options.getString('user') || interaction.user.id;
+            
+            // Get username to display
+            let targetUsername = interaction.user.username;
+            if (targetUserId !== interaction.user.id) {
+                try {
+                    // Try to fetch user info from Discord
+                    const targetUser = await interaction.client.users.fetch(targetUserId);
+                    targetUsername = targetUser.username;
+                } catch (error) {
+                    console.error('Error fetching user:', error);
+                    // Fall back to showing the user ID if we can't fetch the username
+                    targetUsername = `User ${targetUserId}`;
+                }
+            }
+            
             // Get all portfolio data
-            const stockPortfolio = await tradingService.getPortfolio(interaction.user.id);
-            const cryptoPortfolio = await cryptoTradingService.getCryptoPortfolio(interaction.user.id);
+            const stockPortfolio = await tradingService.getPortfolio(targetUserId);
+            const cryptoPortfolio = await cryptoTradingService.getCryptoPortfolio(targetUserId);
             
             // Format cryptoPortfolio to have expected properties
             const formattedCryptoPortfolio = {
@@ -88,10 +111,10 @@ export const portfolioCommand: Command = {
             }
             
             // Get options portfolio value
-            const optionsPortfolio = await optionsService.getOptionsPortfolio(interaction.user.id);
+            const optionsPortfolio = await optionsService.getOptionsPortfolio(targetUserId);
             
             // Get cash balance from userDb
-            const cashBalance = userDb.getCashBalance(interaction.user.id);
+            const cashBalance = userDb.getCashBalance(targetUserId);
             
             // Create a portfolio summary object with all needed values
             const portfolioSummary = {
@@ -105,23 +128,24 @@ export const portfolioCommand: Command = {
                     optionsPortfolio.totalValue
             };
             
+            // Pass the target username to the view functions
             // Show different views based on user selection
             switch (viewOption) {
                 case PortfolioView.SUMMARY:
-                    await showSummaryView(interaction, stockPortfolio, formattedCryptoPortfolio, portfolioSummary);
+                    await showSummaryView(interaction, stockPortfolio, formattedCryptoPortfolio, portfolioSummary, targetUsername, targetUserId);
                     break;
                 case PortfolioView.STOCKS:
-                    await showStocksView(interaction, stockPortfolio);
+                    await showStocksView(interaction, stockPortfolio, targetUsername, targetUserId);
                     break;
                 case PortfolioView.CRYPTO:
-                    await showCryptoView(interaction, formattedCryptoPortfolio, cashBalance);
+                    await showCryptoView(interaction, formattedCryptoPortfolio, cashBalance, targetUsername, targetUserId);
                     break;
                 default:
-                    await showSummaryView(interaction, stockPortfolio, formattedCryptoPortfolio, portfolioSummary);
+                    await showSummaryView(interaction, stockPortfolio, formattedCryptoPortfolio, portfolioSummary, targetUsername, targetUserId);
             }
         } catch (error) {
             console.error('Portfolio command error:', error);
-            await interaction.editReply('An error occurred while fetching your portfolio. Please try again later.');
+            await interaction.editReply('An error occurred while fetching the portfolio. Please try again later.');
         }
     }
 };
@@ -133,7 +157,9 @@ async function showSummaryView(
     interaction: ChatInputCommandInteraction, 
     stockPortfolio: any, 
     cryptoPortfolio: any, 
-    totalValue: any
+    totalValue: any,
+    targetUsername: string,
+    targetUserId: string
 ) {
     // Check if portfolio is completely empty
     const hasStocks = stockPortfolio.positions && stockPortfolio.positions.length > 0;
@@ -141,7 +167,7 @@ async function showSummaryView(
     
     if (!hasStocks && !hasCrypto) {
         const embed = new EmbedBuilder()
-            .setTitle(`${interaction.user.username}'s Portfolio`)
+            .setTitle(`${targetUsername}'s Portfolio`)
             .setColor('#0099ff')
             .setDescription('Your portfolio is currently empty. Use the `/buy` or `/crypto_buy` commands to purchase assets.')
             .addFields({ 
@@ -157,7 +183,7 @@ async function showSummaryView(
     
     // Create summary embed
     const embed = new EmbedBuilder()
-        .setTitle(`${interaction.user.username}'s Portfolio Summary`)
+        .setTitle(`${targetUsername}'s Portfolio Summary`)
         .setColor('#0099ff')
         .addFields([
             { 
@@ -269,10 +295,10 @@ async function showSummaryView(
         // Handle button clicks
         if (i.customId === 'view_stocks') {
             await i.update({ components: [] });
-            await showStocksView(interaction, stockPortfolio);
+            await showStocksView(interaction, stockPortfolio, targetUsername, targetUserId);
         } else if (i.customId === 'view_crypto') {
             await i.update({ components: [] });
-            await showCryptoView(interaction, cryptoPortfolio, totalValue.cashBalance);
+            await showCryptoView(interaction, cryptoPortfolio, totalValue.cashBalance, targetUsername, targetUserId);
         }
     });
     
@@ -294,11 +320,11 @@ async function showSummaryView(
 /**
  * Show the stocks view of the portfolio (stocks only)
  */
-async function showStocksView(interaction: ChatInputCommandInteraction, portfolio: any) {
+async function showStocksView(interaction: ChatInputCommandInteraction, portfolio: any, targetUsername: string, targetUserId: string) {
     // If portfolio is empty, show simple message
     if (portfolio.positions.length === 0) {
         const embed = new EmbedBuilder()
-            .setTitle(`${interaction.user.username}'s Stock Portfolio`)
+            .setTitle(`${targetUsername}'s Stock Portfolio`)
             .setColor('#0099ff')
             .setDescription('Your stock portfolio is currently empty. Use the `/buy` command to purchase stocks.')
             .addFields({ 
@@ -330,7 +356,7 @@ async function showStocksView(interaction: ChatInputCommandInteraction, portfoli
         const currentPositions = positions.slice(startIndex, endIndex);
         
         const embed = new EmbedBuilder()
-            .setTitle(`${interaction.user.username}'s Stock Portfolio (Page ${page + 1}/${totalPages})`)
+            .setTitle(`${targetUsername}'s Stock Portfolio (Page ${page + 1}/${totalPages})`)
             .setColor('#0099ff')
             .addFields([
                 { 
@@ -452,22 +478,22 @@ async function showStocksView(interaction: ChatInputCommandInteraction, portfoli
             await i.deferUpdate();
             
             // Fetch all data needed for summary view
-            const totalPortfolioValue = await cryptoTradingService.getTotalPortfolioValue(interaction.user.id);
-            const cryptoPortfolio = await cryptoTradingService.getCryptoPortfolio(interaction.user.id);
+            const totalPortfolioValue = await cryptoTradingService.getTotalPortfolioValue(targetUserId);
+            const cryptoPortfolio = await cryptoTradingService.getCryptoPortfolio(targetUserId);
             
             // Create a portfolio summary object
             const portfolioSummary = {
                 cashBalance: portfolio.cashBalance,
                 totalStockValue: portfolio.totalValue - portfolio.cashBalance,
                 totalCryptoValue: cryptoPortfolio.reduce((sum: number, pos: any) => sum + (pos.currentValue || 0), 0),
-                totalOptionsValue: (await optionsService.getOptionsPortfolio(interaction.user.id)).totalValue,
+                totalOptionsValue: (await optionsService.getOptionsPortfolio(targetUserId)).totalValue,
                 totalPortfolioValue: totalPortfolioValue
             };
             
             // Generate summary embed and components
             const hasStocks = portfolio.positions && portfolio.positions.length > 0;
             const hasCrypto = cryptoPortfolio && cryptoPortfolio.length > 0;
-            const embed = generateSummaryEmbed(interaction, portfolio, cryptoPortfolio, portfolioSummary, hasStocks, hasCrypto);
+            const embed = generateSummaryEmbed(interaction, portfolio, cryptoPortfolio, portfolioSummary, hasStocks, hasCrypto, targetUsername);
             const components = generateSummaryButtons(hasStocks, hasCrypto);
             
             // Update the message in a single call
@@ -505,10 +531,11 @@ function generateSummaryEmbed(
     cryptoPortfolio: any, 
     totalValue: any,
     hasStocks: boolean,
-    hasCrypto: boolean
+    hasCrypto: boolean,
+    targetUsername: string
 ) {
     const embed = new EmbedBuilder()
-        .setTitle(`${interaction.user.username}'s Portfolio Summary`)
+        .setTitle(`${targetUsername}'s Portfolio Summary`)
         .setColor('#0099ff')
         .addFields([
             { 
@@ -620,11 +647,11 @@ function generateSummaryButtons(hasStocks: boolean, hasCrypto: boolean) {
 /**
  * Show the crypto view of the portfolio (cryptocurrencies only)
  */
-async function showCryptoView(interaction: ChatInputCommandInteraction, portfolio: any, cashBalance: number) {
+async function showCryptoView(interaction: ChatInputCommandInteraction, portfolio: any, cashBalance: number, targetUsername: string, targetUserId: string) {
     // If portfolio is empty, show simple message
     if (portfolio.positions.length === 0) {
         const embed = new EmbedBuilder()
-            .setTitle(`${interaction.user.username}'s Crypto Portfolio`)
+            .setTitle(`${targetUsername}'s Crypto Portfolio`)
             .setColor('#f7931a') // Bitcoin gold color
             .setDescription('Your cryptocurrency portfolio is currently empty. Use the `/crypto_buy` command to purchase cryptocurrencies.')
             .addFields({ 
@@ -656,7 +683,7 @@ async function showCryptoView(interaction: ChatInputCommandInteraction, portfoli
         const currentPositions = positions.slice(startIndex, endIndex);
         
         const embed = new EmbedBuilder()
-            .setTitle(`${interaction.user.username}'s Crypto Portfolio (Page ${page + 1}/${totalPages})`)
+            .setTitle(`${targetUsername}'s Crypto Portfolio (Page ${page + 1}/${totalPages})`)
             .setColor('#f7931a') // Bitcoin gold color
             .addFields([
                 { 
@@ -786,22 +813,22 @@ async function showCryptoView(interaction: ChatInputCommandInteraction, portfoli
             await i.deferUpdate();
             
             // Fetch all data needed for summary view
-            const totalPortfolioValue = await cryptoTradingService.getTotalPortfolioValue(interaction.user.id);
-            const stockPortfolio = await tradingService.getPortfolio(interaction.user.id);
+            const totalPortfolioValue = await cryptoTradingService.getTotalPortfolioValue(targetUserId);
+            const stockPortfolio = await tradingService.getPortfolio(targetUserId);
             
             // Create a portfolio summary object
             const portfolioSummary = {
                 cashBalance: cashBalance,
                 totalStockValue: stockPortfolio.positions.length > 0 ? stockPortfolio.totalValue - cashBalance : 0,
                 totalCryptoValue: portfolio.totalValue,
-                totalOptionsValue: (await optionsService.getOptionsPortfolio(interaction.user.id)).totalValue,
+                totalOptionsValue: (await optionsService.getOptionsPortfolio(targetUserId)).totalValue,
                 totalPortfolioValue: totalPortfolioValue
             };
             
             // Generate summary embed and components
             const hasStocks = stockPortfolio.positions && stockPortfolio.positions.length > 0;
             const hasCrypto = portfolio.positions && portfolio.positions.length > 0;
-            const embed = generateSummaryEmbed(interaction, stockPortfolio, portfolio.positions, portfolioSummary, hasStocks, hasCrypto);
+            const embed = generateSummaryEmbed(interaction, stockPortfolio, portfolio.positions, portfolioSummary, hasStocks, hasCrypto, targetUsername);
             const components = generateSummaryButtons(hasStocks, hasCrypto);
             
             // Update the message in a single call
