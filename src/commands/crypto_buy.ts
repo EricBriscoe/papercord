@@ -1,4 +1,4 @@
-import { ApplicationCommandOptionType, ChatInputCommandInteraction, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ComponentType } from 'discord.js';
+import { ApplicationCommandOptionType, ChatInputCommandInteraction, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ComponentType, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { Command } from '../models/command';
 import { coinGeckoService } from '../services/coinGeckoService';
 import { cryptoTradingService } from '../services/cryptoTradingService';
@@ -238,15 +238,22 @@ async function handleCoinSelection(
             .setTimestamp();
         
         // Create confirm/cancel buttons
-        const confirmButton = new ActionRowBuilder<any>()
-            .addComponents(
-                { type: 2, style: 3, label: 'Confirm Purchase', customId: 'confirm_purchase' },
-                { type: 2, style: 4, label: 'Cancel', customId: 'cancel_purchase' }
-            );
+        const confirmButton = new ButtonBuilder()
+            .setCustomId('confirm_purchase')
+            .setLabel('Confirm Purchase')
+            .setStyle(ButtonStyle.Success);
+            
+        const cancelButton = new ButtonBuilder()
+            .setCustomId('cancel_purchase')
+            .setLabel('Cancel')
+            .setStyle(ButtonStyle.Danger);
+            
+        const row = new ActionRowBuilder<ButtonBuilder>()
+            .addComponents(confirmButton, cancelButton);
         
         const confirmMessage = await interaction.editReply({
             embeds: [confirmEmbed],
-            components: [confirmButton]
+            components: [row]
         });
         
         // Create collector for button interaction

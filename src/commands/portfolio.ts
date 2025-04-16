@@ -549,7 +549,7 @@ function generateSummaryEmbed(
         let stocksText = '';
         topStocks.forEach((pos: any) => {
             const profitLossSymbol = pos.profitLoss >= 0 ? '📈' : '📉';
-            stocksText += `${pos.symbol}: ${formatCurrency(pos.marketValue)} ${profitLossSymbol} ${pos.percentChange.toFixed(2)}%\n`;
+            stocksText += `${pos.symbol} (${pos.quantity} shares): ${formatCurrency(pos.marketValue)} ${profitLossSymbol} ${pos.percentChange.toFixed(2)}%\n`;
         });
         
         if (stockPortfolio.positions.length > 3) {
