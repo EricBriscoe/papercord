@@ -238,20 +238,38 @@ export const coinGeckoService = {
     /**
      * Get current price for a cryptocurrency with efficient caching
      */
-    async getCoinPrice(coinId: string): Promise<{ id: string; symbol: string; price: number | null; error?: string; cached?: boolean }> {
+    async getCoinPrice(coinId: string): Promise<{ id: string; symbol: string; price: number | null; error?: string; cached?: boolean; source?: string; lastUpdated?: string }> {
         try {
+            console.log(`[${new Date().toISOString()}] getCoinPrice called for coinId: ${coinId}`);
+            
+            // Add absolute maximum cache age check
+            const now = new Date();
+            const maxCacheAgeMs = 24 * 60 * 60 * 1000; // 24 hours max
+            const cacheAge = now.getTime() - globalCache.lastUpdated.getTime();
+            
+            if (cacheAge > maxCacheAgeMs) {
+                console.log(`[DEBUG] Global cache is too old (${cacheAge}ms). Maximum age is ${maxCacheAgeMs}ms. Forcing update.`);
+                globalCache.nextUpdateTime = new Date(0); // Force update
+            }
+            
             // Check if global cache needs updating
+            console.log(`[DEBUG] Checking if global cache needs updating. nextUpdateTime: ${globalCache.nextUpdateTime.toISOString()}, now: ${now.toISOString()}`);
             await this.updateGlobalPriceCache();
             
             // Check global memory cache first
             if (globalCache.prices[coinId] !== undefined) {
+                console.log(`[DEBUG] Found price in global memory cache: ${globalCache.prices[coinId]}, lastUpdated: ${globalCache.lastUpdated.toISOString()}`);
                 return { 
                     id: coinId, 
                     symbol: coinId,
                     price: globalCache.prices[coinId],
-                    cached: true
+                    cached: true,
+                    source: 'global_cache',
+                    lastUpdated: globalCache.lastUpdated.toISOString()
                 };
             }
+            
+            console.log(`[DEBUG] Price not found in global cache, checking database cache`);
             
             // Check database cache next
             const cachedData = priceCacheDb.getLatestPrice(
@@ -261,6 +279,7 @@ export const coinGeckoService = {
             );
             
             if (cachedData) {
+                console.log(`[DEBUG] Found price in database cache: ${cachedData.price}, timestamp: ${cachedData.timestamp}`);
                 // Update global cache with this value
                 globalCache.prices[coinId] = cachedData.price;
                 
@@ -268,9 +287,13 @@ export const coinGeckoService = {
                     id: coinId, 
                     symbol: coinId,
                     price: cachedData.price,
-                    cached: true
+                    cached: true,
+                    source: 'db_cache',
+                    lastUpdated: cachedData.timestamp
                 };
             }
+            
+            console.log(`[DEBUG] Price not found in database cache, fetching from CoinGecko API`);
             
             // If not in global cache or DB, we need to fetch it specifically
             const response = await fetch(`${BASE_URL}/simple/price?ids=${coinId}&vs_currencies=usd`, {
@@ -282,49 +305,77 @@ export const coinGeckoService = {
             });
 
             updateApiCallCount();
+            
+            console.log(`[DEBUG] CoinGecko API response status: ${response.status} ${response.statusText}`);
 
             if (!response.ok) {
+                console.error(`[ERROR] Failed to fetch price from CoinGecko API: ${response.status} ${response.statusText}`);
+                // Set a shorter next update time to try again sooner
+                globalCache.nextUpdateTime = new Date(now.getTime() + 15 * 60 * 1000); // Try again in 15 minutes
+                saveGlobalCache();
+                
                 return {
                     id: coinId,
                     symbol: coinId,
                     price: null,
-                    error: `Error fetching price: ${response.status} ${response.statusText}`
+                    error: `Error fetching price: ${response.status} ${response.statusText}`,
+                    source: 'api_error'
                 };
             }
 
             const data = await response.json();
+            console.log(`[DEBUG] CoinGecko API response data:`, JSON.stringify(data));
             
             if (!data[coinId] || data[coinId].usd === undefined) {
+                console.error(`[ERROR] No price data found for ${coinId} in API response`);
                 return {
                     id: coinId,
                     symbol: coinId,
                     price: null,
-                    error: 'No price data available'
+                    error: 'No price data available',
+                    source: 'api_no_data'
                 };
             }
             
             const price = data[coinId].usd;
+            console.log(`[DEBUG] Successfully retrieved price from API: ${price}`);
             
             // Update global cache
             globalCache.prices[coinId] = price;
+            console.log(`[DEBUG] Updated global cache for ${coinId}`);
             saveGlobalCache();
+            console.log(`[DEBUG] Saved global cache to disk`);
             
             // Store in database cache
-            priceCacheDb.storePrice(
-                coinId,
-                price,
-                'coingecko',
-                new Date(),
-                '1m'
-            );
+            try {
+                console.log(`[DEBUG] Storing price in database cache`);
+                priceCacheDb.storePrice(
+                    coinId,
+                    price,
+                    'coingecko',
+                    now,
+                    '1m'
+                );
+                console.log(`[DEBUG] Successfully stored price in database cache`);
+            } catch (dbError) {
+                console.error(`[ERROR] Failed to store price in database:`, dbError);
+            }
             
-            return { id: coinId, symbol: coinId, price };
+            return { 
+                id: coinId, 
+                symbol: coinId, 
+                price,
+                source: 'api_fresh',
+                lastUpdated: now.toISOString()
+            };
         } catch (error) {
+            console.error(`[ERROR] Exception in getCoinPrice for ${coinId}:`, error);
             return { 
                 id: coinId, 
                 symbol: coinId, 
                 price: null, 
-                error: error instanceof Error ? error.message : 'Unknown error' 
+                error: error instanceof Error ? error.message : 'Unknown error',
+                source: 'exception'
             };
         }
     },
