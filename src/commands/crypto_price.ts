@@ -1,7 +1,7 @@
 import { ApplicationCommandOptionType, ChatInputCommandInteraction, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ComponentType } from 'discord.js';
 import { Command } from '../models/command';
 import { coinGeckoService } from '../services/coinGeckoService';
-import { formatCurrency } from '../utils/formatters';
+import { formatCurrency, formatCryptoPrice } from '../utils/formatters';
 
 export const cryptoPriceCommand: Command = {
     name: 'crypto_price',
@@ -172,7 +172,7 @@ async function handleCoinSelection(
         .addFields([
             {
                 name: 'Current Price',
-                value: formatCurrency(priceData.price),
+                value: formatCryptoPrice(priceData.price),
                 inline: true
             }
         ]);
@@ -208,7 +208,7 @@ async function handleCoinSelection(
         if (coinDetails.market_data?.ath?.usd) {
             embed.addFields({
                 name: 'All Time High',
-                value: formatCurrency(coinDetails.market_data.ath.usd),
+                value: formatCryptoPrice(coinDetails.market_data.ath.usd),
                 inline: true
             });
         }

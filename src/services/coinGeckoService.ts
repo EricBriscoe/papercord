@@ -14,7 +14,7 @@ const BASE_URL = 'https://api.coingecko.com/api/v3';
 
 // Define cache settings
 const CACHE_MAX_AGE_MINUTES = 15; // Maximum age of cache in minutes
-const GLOBAL_CACHE_UPDATE_INTERVAL_HOURS = 6; // Update the global cache every 6 hours
+// Using the same value for both the database cache and global cache
 const TOP_COINS_TO_CACHE = 250; // Number of top coins to cache in the global cache
 
 // Global in-memory cache
@@ -224,7 +224,7 @@ export const coinGeckoService = {
             
             // Update cache timestamps
             globalCache.lastUpdated = now;
-            globalCache.nextUpdateTime = new Date(now.getTime() + GLOBAL_CACHE_UPDATE_INTERVAL_HOURS * 60 * 60 * 1000);
+            globalCache.nextUpdateTime = new Date(now.getTime() + CACHE_MAX_AGE_MINUTES * 60 * 1000);
             
             // Save to disk
             saveGlobalCache();
@@ -778,10 +778,3 @@ export const coinGeckoService = {
 coinGeckoService.updateGlobalPriceCache().catch(err => {
     console.error('Failed to initialize global cache:', err);
 });
-
-// Set up a recurring job to update the cache
-setInterval(() => {
-    coinGeckoService.updateGlobalPriceCache().catch(err => {
-        console.error('Failed to update global cache in scheduled task:', err);
-    });
-}, GLOBAL_CACHE_UPDATE_INTERVAL_HOURS * 60 * 60 * 1000 / 2); // Half the interval time to ensure we don't miss updates
