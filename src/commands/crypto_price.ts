@@ -194,7 +194,7 @@ async function handleCoinSelection(
         }
         
         // 24h price change
-        if (coinDetails.market_data?.price_change_percentage_24h !== undefined) {
+        if (coinDetails.market_data?.price_change_percentage_24h !== undefined && coinDetails.market_data.price_change_percentage_24h !== null) {
             const change24h = coinDetails.market_data.price_change_percentage_24h;
             const changeText = `${change24h >= 0 ? '📈' : '📉'} ${change24h.toFixed(2)}%`;
             embed.addFields({
