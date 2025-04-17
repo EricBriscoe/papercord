@@ -19,23 +19,27 @@ import { sudoCommand } from './commands/sudo';
 import { Command } from './models/command';
 import { optionsService } from './services/optionsService';
 import { optionsDb } from './database/operations';
+import type { CryptoPosition } from './database/operations';
 
 // Load environment variables
 dotenv.config();
 
-// Set up a global error handler to catch unhandled promise rejections
+/**
+ * Global error handler for unhandled promise rejections
+ * Specially handles Discord API interaction errors which can occur when
+ * interactions expire or are handled multiple times
+ */
 process.on('unhandledRejection', (error) => {
   if (error instanceof DiscordAPIError && error.code === 10062) {
     console.log('An interaction expired or was already handled. This is expected sometimes:');
     console.log(`Error details: ${error.message}`);
-    // No need to crash for these errors
     return;
   }
   
   console.error('Unhandled promise rejection:', error);
 });
 
-// Discord client with appropriate intents for guild interactions
+// Initialize Discord client with required gateway intents
 const client = new Client({ 
     intents: [
         GatewayIntentBits.Guilds,
@@ -45,43 +49,37 @@ const client = new Client({
     ] 
 });
 
-// Command registry
+// Command registry collection
 const commands = new Collection<string, Command>();
 
-// Register all available commands grouped by category
+/**
+ * Register all available commands, grouped by category:
+ * - Basic trading commands (buy, sell, portfolio, etc.)
+ * - Options trading commands (price options, trade options, etc.)
+ * - Crypto trading commands (crypto buy/sell/price)
+ * - Margin and administrative commands
+ */
 [
-    // Basic trading commands
-    buyCommand, 
-    sellCommand, 
-    portfolioCommand, 
-    priceCommand, 
-    historyCommand, 
-    resetCommand,
-    // Options trading commands
-    priceOptionCommand,
-    tradeOptionCommand,
-    optionsPortfolioCommand,
-    closeOptionCommand,
-    // Crypto trading commands
-    cryptoBuyCommand,
-    cryptoSellCommand,
-    cryptoPriceCommand,
-    // Margin and risk management commands
-    marginCommand,
-    // Community commands
-    leaderboardCommand,
-    // Admin commands
-    sudoCommand
+    // Basic trading
+    buyCommand, sellCommand, portfolioCommand, priceCommand, 
+    historyCommand, resetCommand,
+    // Options trading
+    priceOptionCommand, tradeOptionCommand, 
+    optionsPortfolioCommand, closeOptionCommand,
+    // Crypto trading
+    cryptoBuyCommand, cryptoSellCommand, cryptoPriceCommand,
+    // Other commands
+    marginCommand, leaderboardCommand, sudoCommand
 ].forEach(command => {
     commands.set(command.name, command);
 });
 
-// Initialize bot and register slash commands with Discord API
+// Bot initialization and scheduled task setup
 client.once(Events.ClientReady, async (readyClient) => {
     console.log(`Logged in as ${readyClient.user.tag}!`);
     
     try {
-        // Prepare command data for registration
+        // Register slash commands with Discord API
         const commandData = Array.from(commands.values()).map(command => ({
             name: command.name,
             description: command.description,
@@ -89,10 +87,8 @@ client.once(Events.ClientReady, async (readyClient) => {
         }));
         
         const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN || '');
-        
         console.log('Started refreshing application (/) commands.');
         
-        // Register global commands
         await rest.put(
             Routes.applicationCommands(readyClient.user.id),
             { body: commandData }
@@ -100,7 +96,11 @@ client.once(Events.ClientReady, async (readyClient) => {
         
         console.log('Successfully reloaded application (/) commands.');
         
-        // Daily job to process expired options contracts
+        /**
+         * Schedule daily job (24h) to process expired options contracts
+         * This ensures options that have passed their expiration date are properly
+         * settled according to their final intrinsic value
+         */
         setInterval(async () => {
             try {
                 console.log('Checking for expired options...');
@@ -113,7 +113,10 @@ client.once(Events.ClientReady, async (readyClient) => {
             }
         }, 86400000); // 24 hours
         
-        // 4-hour job to monitor margin status and issue warnings
+        /**
+         * Schedule 4-hour job to monitor margin status and issue warnings
+         * This provides users with notifications when their positions are at risk
+         */
         setInterval(async () => {
             try {
                 console.log('Checking margin warnings and notifications...');
@@ -140,7 +143,10 @@ client.once(Events.ClientReady, async (readyClient) => {
             }
         }, 14400000); // 4 hours
         
-        // Hourly job to automatically liquidate positions for severe margin violations
+        /**
+         * Schedule hourly job to automatically liquidate positions for severe margin violations
+         * Positions are liquidated when equity ratio falls below 20%
+         */
         setInterval(async () => {
             try {
                 console.log('Processing liquidations for severe margin violations...');
@@ -148,7 +154,6 @@ client.once(Events.ClientReady, async (readyClient) => {
                 let totalLiquidated = 0;
                 
                 for (const userId of usersWithOpenPositions) {
-                    // Liquidate positions when equity ratio falls below 20%
                     const marginStatus = await optionsService.calculateMarginStatus(userId);
                     const equityRatio = marginStatus.equityRatio || 
                         ((marginStatus.portfolioValue - marginStatus.marginUsed) / marginStatus.portfolioValue);
@@ -170,7 +175,10 @@ client.once(Events.ClientReady, async (readyClient) => {
             }
         }, 3600000); // 1 hour
         
-        // Daily job to clean up "dust" crypto positions worth less than threshold
+        /**
+         * Function to clean up small-value "dust" crypto positions and delisted cryptos
+         * Processes all users with crypto holdings to maintain clean portfolios
+         */
         const cleanupCryptoPositions = async () => {
             try {
                 console.log('Cleaning up worthless crypto positions...');
@@ -180,6 +188,7 @@ client.once(Events.ClientReady, async (readyClient) => {
                 const usersWithCrypto = userDb.getUsersWithCryptoPositions();
                 let totalPositionsLiquidated = 0;
                 let totalValueCredited = 0;
+                let delistedPositionsLiquidated = 0;
                 
                 for (const userId of usersWithCrypto) {
                     const result = await cryptoTradingService.cleanupWorthlessPositions(userId);
@@ -190,11 +199,18 @@ client.once(Events.ClientReady, async (readyClient) => {
                         
                         totalPositionsLiquidated += result.positionsLiquidated;
                         totalValueCredited += result.totalCredited;
+                        
+                        if (result.message.includes('delisted') || result.message.includes('100% loss')) {
+                            delistedPositionsLiquidated++;
+                        }
                     }
                 }
                 
                 if (totalPositionsLiquidated > 0) {
                     console.log(`Total crypto positions liquidated: ${totalPositionsLiquidated}, total value credited: ${totalValueCredited.toFixed(2)} USD`);
+                    if (delistedPositionsLiquidated > 0) {
+                        console.log(`Included ${delistedPositionsLiquidated} delisted cryptocurrencies liquidated at 100% loss`);
+                    }
                 } else {
                     console.log('No worthless crypto positions were found that needed cleanup');
                 }
@@ -203,21 +219,82 @@ client.once(Events.ClientReady, async (readyClient) => {
             }
         };
         
+        /**
+         * Function to specifically check for and handle delisted cryptocurrencies
+         * This prevents users from retaining value in cryptocurrencies that no longer exist
+         */
+        const checkForDelistedCryptos = async () => {
+            try {
+                console.log('Checking for delisted cryptocurrencies...');
+                const { cryptoTradingService } = await import('./services/cryptoTradingService');
+                const { cryptoPortfolioDb, userDb } = await import('./database/operations');
+                
+                // Collect all positions across all users
+                const allPositions: CryptoPosition[] = [];
+                const usersWithCrypto = userDb.getUsersWithCryptoPositions();
+                
+                for (const userId of usersWithCrypto) {
+                    const userPositions = cryptoPortfolioDb.getUserPortfolio(userId);
+                    allPositions.push(...userPositions);
+                }
+                
+                // Get unique coin IDs for checking
+                const uniqueCoinIds = [...new Set(allPositions.map(p => p.coinId))];
+                console.log(`Checking ${uniqueCoinIds.length} unique cryptocurrencies for delisting status`);
+                
+                let delistedCoins = 0;
+                
+                for (const coinId of uniqueCoinIds) {
+                    const delistedCheck = await cryptoTradingService.isDelistedCoin(coinId);
+                    
+                    if (delistedCheck.delisted) {
+                        console.log(`Found delisted cryptocurrency: ${coinId} - ${delistedCheck.message}`);
+                        delistedCoins++;
+                        
+                        // Find affected users and process their positions
+                        const affectedUsers = [...new Set(allPositions
+                            .filter(p => p.coinId === coinId)
+                            .map(p => p.userId))];
+                        
+                        console.log(`${affectedUsers.length} users hold delisted cryptocurrency ${coinId}`);
+                        
+                        for (const userId of affectedUsers) {
+                            await cryptoTradingService.cleanupWorthlessPositions(userId);
+                        }
+                    }
+                }
+                
+                if (delistedCoins > 0) {
+                    console.log(`Total delisted cryptocurrencies processed: ${delistedCoins}`);
+                } else {
+                    console.log('No delisted cryptocurrencies found');
+                }
+            } catch (error) {
+                console.error('Error checking for delisted cryptocurrencies:', error);
+            }
+        };
+        
         // Run crypto cleanup at startup and then daily
         cleanupCryptoPositions();
         setInterval(cleanupCryptoPositions, 86400000); // 24 hours
+        
+        // Run delisted crypto check at startup and then every 12 hours
+        checkForDelistedCryptos();
+        setInterval(checkForDelistedCryptos, 43200000); // 12 hours
         
     } catch (error) {
         console.error('Error registering commands:', error);
     }
 });
 
-// Slash command handler
+/**
+ * Discord interaction handler for slash commands
+ * Processes incoming commands and handles execution errors
+ */
 client.on(Events.InteractionCreate, async interaction => {
     if (!interaction.isChatInputCommand()) return;
     
     const command = commands.get(interaction.commandName);
-    
     if (!command) return;
     
     try {
@@ -239,5 +316,5 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 });
 
-// Start the bot
+// Start the Discord bot
 client.login(process.env.DISCORD_TOKEN);

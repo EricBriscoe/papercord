@@ -75,7 +75,7 @@ interface MarginCall {
 }
 
 // Cryptocurrency data structures
-interface CryptoPosition {
+export interface CryptoPosition {
     id?: number;
     userId: string;
     coinId: string;
@@ -85,7 +85,7 @@ interface CryptoPosition {
     averagePurchasePrice: number;
 }
 
-interface CryptoTransaction {
+export interface CryptoTransaction {
     id?: number;
     userId: string;
     coinId: string;
