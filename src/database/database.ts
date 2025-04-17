@@ -19,6 +19,31 @@ function updateDatabaseSchema() {
     console.log('Checking for schema updates...');
     
     try {
+        // Check if marginBalance column exists in users table
+        const userTableInfo = db.prepare("PRAGMA table_info(users)").all() as any[];
+        const hasMarginBalance = userTableInfo.some(column => column.name === 'marginBalance');
+        
+        if (!hasMarginBalance) {
+            console.log('Adding marginBalance column to users table...');
+            
+            // Add marginBalance column with default value of 0
+            db.exec('ALTER TABLE users ADD COLUMN marginBalance REAL DEFAULT 0');
+            
+            console.log('Successfully added marginBalance column to users table.');
+        }
+        
+        // Check if marginUsed column exists in users table
+        const hasMarginUsed = userTableInfo.some(column => column.name === 'marginUsed');
+        
+        if (!hasMarginUsed) {
+            console.log('Adding marginUsed column to users table...');
+            
+            // Add marginUsed column with default value of 0
+            db.exec('ALTER TABLE users ADD COLUMN marginUsed REAL DEFAULT 0');
+            
+            console.log('Successfully added marginUsed column to users table.');
+        }
+
         // Check if we need to update the price_cache table's source constraint
         const sourceConstraint = db.prepare(`
             SELECT sql FROM sqlite_master 
