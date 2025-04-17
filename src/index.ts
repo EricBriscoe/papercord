@@ -1,4 +1,4 @@
-import { Client, Events, GatewayIntentBits, REST, Routes, Collection } from 'discord.js';
+import { Client, Events, GatewayIntentBits, REST, Routes, Collection, DiscordAPIError } from 'discord.js';
 import dotenv from 'dotenv';
 import { buyCommand } from './commands/buy';
 import { sellCommand } from './commands/sell';
@@ -22,6 +22,18 @@ import { optionsDb } from './database/operations';
 
 // Load environment variables
 dotenv.config();
+
+// Set up a global error handler to catch unhandled promise rejections
+process.on('unhandledRejection', (error) => {
+  if (error instanceof DiscordAPIError && error.code === 10062) {
+    console.log('An interaction expired or was already handled. This is expected sometimes:');
+    console.log(`Error details: ${error.message}`);
+    // No need to crash for these errors
+    return;
+  }
+  
+  console.error('Unhandled promise rejection:', error);
+});
 
 // Discord client with appropriate intents for guild interactions
 const client = new Client({ 
