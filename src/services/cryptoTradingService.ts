@@ -404,8 +404,133 @@ export const cryptoTradingService = {
   },
 
   /**
-   * Automatically liquidates tiny value "dust" positions and those with 
-   * excessive quantities to prevent portfolio pollution
+   * Checks if a cryptocurrency has been delisted from CoinGecko
+   * 
+   * @param coinId The ID of the coin to check
+   * @returns Object indicating if the coin is delisted with details
+   */
+  async isDelistedCoin(coinId: string): Promise<{ delisted: boolean; message: string }> {
+    try {
+      const result = await coinGeckoService.getCoinPrice(coinId);
+      
+      // Case 1: Error message that explicitly mentions inactivity or deactivation
+      if (result.error) {
+        const errorLower = result.error.toLowerCase();
+        if (
+          errorLower.includes('inactive') || 
+          errorLower.includes('deactivated') || 
+          errorLower.includes('delisted')
+        ) {
+          console.log(`Coin ${coinId} is explicitly reported as delisted/inactive: ${result.error}`);
+          return { 
+            delisted: true, 
+            message: `Cryptocurrency ${coinId} has been delisted: ${result.error}` 
+          };
+        }
+      }
+      
+      // Case 2: API returns null price but no specific error message
+      if (result.price === null) {
+        console.log(`Coin ${coinId} returned null price without specific error message`);
+        return { 
+          delisted: true, 
+          message: `Cryptocurrency ${coinId} appears to be delisted (no price data available)` 
+        };
+      }
+
+      // Case 3: Price is zero, which is effectively worthless
+      if (result.price === 0) {
+        console.log(`Coin ${coinId} has zero price`);
+        return { 
+          delisted: true, 
+          message: `Cryptocurrency ${coinId} has zero value (likely delisted)` 
+        };
+      }
+      
+      return { delisted: false, message: 'Coin is active' };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      // Check for API errors that indicate delisting
+      if (
+        errorMessage.toLowerCase().includes('inactive') || 
+        errorMessage.toLowerCase().includes('deactivated') || 
+        errorMessage.toLowerCase().includes('delisted')
+      ) {
+        console.log(`Exception indicates coin ${coinId} is delisted: ${errorMessage}`);
+        return { 
+          delisted: true, 
+          message: `Cryptocurrency ${coinId} has been delisted: ${errorMessage}` 
+        };
+      }
+      
+      // For other errors, log but don't assume delisted
+      console.error(`Error checking if ${coinId} is delisted:`, error);
+      return { delisted: false, message: `Error checking status: ${errorMessage}` };
+    }
+  },
+
+  /**
+   * Liquidates a cryptocurrency position at 100% loss because it's delisted
+   * 
+   * @param userId The user ID who holds the position
+   * @param coinId The delisted coin ID
+   * @param position The user's position details
+   * @returns Result of the liquidation operation
+   */
+  async liquidateDelistedPosition(userId: string, coinId: string, position: any): Promise<{
+    success: boolean;
+    liquidationValue: number;
+    message: string;
+  }> {
+    try {
+      console.log(`Liquidating delisted cryptocurrency ${coinId} for user ${userId}: ${position.quantity} units`);
+      
+      // Liquidate at 100% loss (price = 0)
+      const liquidationPrice = 0;
+      const liquidationValue = 0; // Total loss
+      
+      // Record the transaction with zero value price
+      cryptoTransactionDb.addTransaction(
+        userId,
+        position.coinId,
+        position.symbol,
+        position.name,
+        position.quantity,
+        liquidationPrice,
+        'sell'
+      );
+      
+      // Remove the position
+      cryptoPortfolioDb.updatePosition(
+        userId,
+        position.coinId,
+        position.symbol,
+        position.name,
+        0,
+        0
+      );
+      
+      // No need to update cash balance as liquidation value is 0
+      
+      return {
+        success: true,
+        liquidationValue,
+        message: `Position in ${position.name || coinId} (${position.symbol}) was liquidated at 100% loss due to delisting. Position closed with zero value.`
+      };
+    } catch (error) {
+      console.error(`Error liquidating delisted position:`, error);
+      return { 
+        success: false, 
+        liquidationValue: 0,
+        message: `Error liquidating delisted position: ${error instanceof Error ? error.message : 'Unknown error'}`
+      };
+    }
+  },
+
+  /**
+   * Automatically liquidates tiny value "dust" positions, those with 
+   * excessive quantities, and delisted cryptocurrencies to prevent portfolio pollution
    */
   async cleanupWorthlessPositions(userId: string): Promise<{ 
     success: boolean; 
@@ -432,8 +557,23 @@ export const cryptoTradingService = {
       let totalCredited = 0;
       const liquidationDetails: string[] = [];
       
-      // Identify and liquidate worthless positions
+      // Process each position to identify delisted coins and worthless positions
       for (const position of positions) {
+        // First, check if the coin has been delisted
+        const delistedCheck = await this.isDelistedCoin(position.coinId);
+        
+        if (delistedCheck.delisted) {
+          // Handle delisted coin (liquidate at 100% loss)
+          const result = await this.liquidateDelistedPosition(userId, position.coinId, position);
+          
+          if (result.success) {
+            positionsLiquidated++;
+            liquidationDetails.push(`${position.name} (${position.symbol}): ${position.quantity.toExponential(2)} units liquidated at 100% loss - Reason: delisted cryptocurrency`);
+          }
+          continue; // Skip to next position
+        }
+        
+        // Continue with regular dust/worthless position logic
         const price = prices[position.coinId] || MIN_COIN_PRICE_USD;
         const positionValue = position.quantity * price;
         
