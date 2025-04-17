@@ -3,7 +3,7 @@ import { Command } from '../models/command';
 import { coinGeckoService } from '../services/coinGeckoService';
 import { cryptoTradingService } from '../services/cryptoTradingService';
 import { userDb } from '../database/operations';
-import { formatCurrency } from '../utils/formatters';
+import { formatCurrency, formatCryptoPrice } from '../utils/formatters';
 
 export const cryptoBuyCommand: Command = {
     name: 'crypto_buy',
@@ -205,7 +205,7 @@ async function handleCoinSelection(
                 },
                 {
                     name: 'Price Per Coin',
-                    value: formatCurrency(currentPrice),
+                    value: formatCryptoPrice(currentPrice),
                     inline: true
                 },
                 {
@@ -296,7 +296,7 @@ async function handleCoinSelection(
                         },
                         {
                             name: 'Price Per Coin',
-                            value: formatCurrency(result.price || currentPrice),
+                            value: formatCryptoPrice(result.price || currentPrice),
                             inline: true
                         },
                         {

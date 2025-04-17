@@ -3,7 +3,7 @@ import { Command } from '../models/command';
 import { coinGeckoService } from '../services/coinGeckoService';
 import { cryptoTradingService } from '../services/cryptoTradingService';
 import { cryptoPortfolioDb } from '../database/operations';
-import { formatCurrency, formatTimestamp } from '../utils/formatters';
+import { formatCurrency, formatTimestamp, formatCryptoPrice, formatCryptoAmount } from '../utils/formatters';
 
 export const cryptoSellCommand: Command = {
     name: 'crypto_sell',
@@ -89,7 +89,7 @@ export const cryptoSellCommand: Command = {
             const coinOptions = portfolioItems.map(position => {
                 return new StringSelectMenuOptionBuilder()
                     .setLabel(`${position.name} (${position.symbol.toUpperCase()})`)
-                    .setDescription(`${position.quantity.toFixed(4)} coins, worth ~${formatCurrency(position.currentValue)}`)
+                    .setDescription(`${position.quantity.toFixed(4)} coins, worth ~${formatCryptoPrice(position.currentValue)}`)
                     .setValue(position.coinId);
             });
             
@@ -356,7 +356,7 @@ async function confirmAndSell(
                 },
                 {
                     name: 'Current Price Per Coin',
-                    value: formatCurrency(currentPrice),
+                    value: formatCryptoPrice(currentPrice),
                     inline: true
                 },
                 {
