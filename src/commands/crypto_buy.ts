@@ -17,8 +17,8 @@ export const cryptoBuyCommand: Command = {
         },
         {
             name: 'amount',
-            description: 'Amount in USD to spend on the purchase (e.g., 1000)',
-            type: ApplicationCommandOptionType.Number,
+            description: 'Amount in USD to spend on the purchase (e.g., 1000 or "max" to use all available cash)',
+            type: ApplicationCommandOptionType.String,
             required: false
         },
         {
@@ -34,23 +34,31 @@ export const cryptoBuyCommand: Command = {
         try {
             const userId = interaction.user.id;
             const coinQuery = interaction.options.getString('coin', true);
-            const amountUsd = interaction.options.getNumber('amount');
+            const amountInput = interaction.options.getString('amount');
             const quantity = interaction.options.getNumber('quantity');
             
             // Input validation
-            if (!amountUsd && !quantity) {
+            if (!amountInput && !quantity) {
                 await interaction.editReply('Please specify either the amount in USD or the quantity of cryptocurrency to buy.');
                 return;
             }
             
-            if (amountUsd && quantity) {
+            if (amountInput && quantity) {
                 await interaction.editReply('Please specify either the amount in USD or the quantity, not both.');
                 return;
             }
             
-            if ((amountUsd && amountUsd <= 0) || (quantity && quantity <= 0)) {
-                await interaction.editReply('Amount or quantity must be greater than zero.');
+            if (quantity && quantity <= 0) {
+                await interaction.editReply('Quantity must be greater than zero.');
                 return;
+            }
+
+            if (amountInput && amountInput.toLowerCase() !== 'max') {
+                const amountUsd = parseFloat(amountInput);
+                if (isNaN(amountUsd) || amountUsd <= 0) {
+                    await interaction.editReply('Amount must be a positive number or "max".');
+                    return;
+                }
             }
             
             const searchResults = await coinGeckoService.searchCoins(coinQuery);
@@ -62,7 +70,7 @@ export const cryptoBuyCommand: Command = {
             
             // Skip selection menu if only one result found
             if (searchResults.length === 1) {
-                await handleCoinSelection(interaction, searchResults[0], amountUsd, quantity);
+                await handleCoinSelection(interaction, searchResults[0], amountInput, quantity);
                 return;
             }
             
@@ -109,7 +117,7 @@ export const cryptoBuyCommand: Command = {
                     return;
                 }
                 
-                await handleCoinSelection(interaction, selectedCoin, amountUsd, quantity);
+                await handleCoinSelection(interaction, selectedCoin, amountInput, quantity);
                 collector.stop();
             });
             
@@ -142,7 +150,7 @@ export const cryptoBuyCommand: Command = {
 async function handleCoinSelection(
     interaction: ChatInputCommandInteraction, 
     coin: { id: string; symbol: string; name: string }, 
-    amountUsd: number | null, 
+    amountInput: string | null, 
     quantity: number | null
 ): Promise<void> {
     try {
@@ -154,14 +162,24 @@ async function handleCoinSelection(
         }
         
         const currentPrice = priceData.price;
+        const userId = interaction.user.id;
+        const cashBalance = userDb.getCashBalance(userId);
         
         // Calculate purchase details based on provided parameters
         let buyQuantity = quantity;
         let totalCost: number;
+        let isMaxPurchase = false;
         
-        if (amountUsd) {
-            buyQuantity = amountUsd / currentPrice;
-            totalCost = amountUsd;
+        if (amountInput) {
+            if (amountInput.toLowerCase() === 'max') {
+                isMaxPurchase = true;
+                totalCost = cashBalance;
+                buyQuantity = cashBalance / currentPrice;
+            } else {
+                const amountUsd = parseFloat(amountInput);
+                totalCost = amountUsd;
+                buyQuantity = amountUsd / currentPrice;
+            }
         } else if (quantity) {
             totalCost = quantity * currentPrice;
         } else {
@@ -175,9 +193,6 @@ async function handleCoinSelection(
         }
         
         // Verify sufficient funds
-        const userId = interaction.user.id;
-        const cashBalance = userDb.getCashBalance(userId);
-        
         if (totalCost! > cashBalance) {
             await interaction.editReply(`You don't have enough cash for this purchase. Required: ${formatCurrency(totalCost!)}, Available: ${formatCurrency(cashBalance)}`);
             return;
@@ -258,13 +273,24 @@ async function handleCoinSelection(
             
             if (i.customId === 'confirm_purchase') {
                 // Calculate final purchase amount if needed
-                let buyAmountUsd = amountUsd;
-                if (!buyAmountUsd && buyQuantity) {
+                let buyAmountUsd: number;
+                
+                if (isMaxPurchase) {
+                    buyAmountUsd = cashBalance;
+                } else if (amountInput && amountInput.toLowerCase() !== 'max') {
+                    buyAmountUsd = parseFloat(amountInput);
+                } else if (buyQuantity) {
                     buyAmountUsd = buyQuantity * currentPrice;
+                } else {
+                    await interaction.editReply({
+                        content: 'An error occurred calculating the purchase amount.',
+                        components: []
+                    });
+                    return;
                 }
                 
                 // Process the transaction
-                const result = await cryptoTradingService.buyCrypto(userId, coin.id, buyAmountUsd!);
+                const result = await cryptoTradingService.buyCrypto(userId, coin.id, buyAmountUsd);
                 
                 if (!result.success) {
                     await interaction.editReply({
@@ -301,16 +327,20 @@ async function handleCoinSelection(
                         },
                         {
                             name: 'Total Cost',
-                            value: formatCurrency(buyAmountUsd!),
+                            value: formatCurrency(buyAmountUsd),
                             inline: true
                         },
                         {
                             name: 'Remaining Cash Balance',
-                            value: formatCurrency(cashBalance - buyAmountUsd!),
+                            value: formatCurrency(cashBalance - buyAmountUsd),
                             inline: true
                         }
                     ])
                     .setTimestamp();
+                
+                if (isMaxPurchase) {
+                    embed.setDescription(`Maximum purchase: Spent all available funds (${formatCurrency(buyAmountUsd)}).`);
+                }
                 
                 await interaction.editReply({ 
                     content: null, 
