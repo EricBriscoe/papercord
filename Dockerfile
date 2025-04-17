@@ -42,8 +42,11 @@ COPY --from=builder /app/dist ./dist
 # Copy Python services
 COPY src/python_services/ ./src/python_services/
 
+# Copy service management scripts
+COPY scripts/ ./scripts/
+
 # Ensure scripts are executable
-RUN chmod +x ./src/python_services/*.sh ./src/python_services/*.py
+RUN chmod +x ./src/python_services/*.sh ./src/python_services/*.py ./scripts/*.sh
 
 # Use non-root user for better security
 USER node
@@ -52,5 +55,5 @@ USER node
 ENV NODE_ENV=production
 ENV YF_PYTHON_SERVICE_URL=http://localhost:3001
 
-# Start both the Python service and Node app
-CMD sh -c "node dist/index.js & ./src/python_services/start_service.sh"
+# Start services with auto-restart capability
+CMD ["./scripts/start-services.sh"]
