@@ -11,7 +11,8 @@ RUN apk add --no-cache \
     jpeg-dev \
     pango-dev \
     giflib-dev \
-    pkgconf
+    pkgconf \
+    ttf-dejavu
 
 # Copy package files and install dependencies with all native modules built
 COPY package*.json ./
@@ -48,7 +49,8 @@ RUN apk add --no-cache \
     jpeg-dev \
     pango-dev \
     giflib-dev \
-    python3-dev
+    python3-dev \
+    ttf-dejavu
 
 # Create and use a Python virtual environment
 RUN python3 -m venv /app/venv
