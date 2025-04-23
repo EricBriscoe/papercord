@@ -60,7 +60,7 @@ const THEME = {
     gridColor: '#393E46',
     upColor: '#4ecca3', // Bright green for positive price movement
     downColor: '#FF2E63', // Bright red for negative price movement
-    fontFamily: 'Arial, Helvetica, sans-serif'
+    fontFamily: 'DejaVu Sans, Arial, Helvetica, sans-serif'
 };
 
 /**
@@ -107,8 +107,8 @@ export async function generateStockPriceChart(symbol: string, timeFrame: TimeFra
         const labels = validDataPoints.map(point => {
             const date = new Date(point.time * 1000);
             return days <= 7 
-                ? format(date, 'MM/dd HH:mm')  // Include hours for shorter timeframes
-                : format(date, 'MM/dd/yyyy');  // Only date for longer timeframes
+                ? format(date, 'yyyy-MM-dd HH:mm')  // ISO format with time for short timeframes
+                : format(date, 'yyyy-MM-dd');      // ISO format for longer timeframes
         });
         
         const dataPoints = validDataPoints.map(point => point.price);
@@ -227,7 +227,7 @@ export async function generateStockPriceChart(symbol: string, timeFrame: TimeFra
                                 size: 14,
                                 family: THEME.fontFamily
                             },
-                            callback: (value) => `$${value}`
+                            callback: (value) => `$${Number(value).toFixed(2)}`
                         },
                         min: min - padding,
                         max: max + padding
