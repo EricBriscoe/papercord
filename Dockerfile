@@ -1,4 +1,4 @@
-FROM node:23-alpine AS builder
+FROM node:alpine AS builder
 
 WORKDIR /app
 
@@ -13,7 +13,7 @@ RUN apk add --no-cache \
     giflib-dev \
     pkgconf
 
-# Copy package files and install dependencies
+# Copy package files and install dependencies with all native modules built
 COPY package*.json ./
 RUN npm ci
 
@@ -24,8 +24,11 @@ COPY src/ ./src/
 # Build the TypeScript project
 RUN npm run build
 
+# Prune dev dependencies
+RUN npm prune --omit=dev
+
 # Production image
-FROM node:23-alpine
+FROM node:alpine
 
 WORKDIR /app
 
@@ -39,7 +42,13 @@ RUN apk add --no-cache \
     pango \
     giflib \
     tzdata \
-    pkgconf
+    pkgconf \
+    build-base \
+    cairo-dev \
+    jpeg-dev \
+    pango-dev \
+    giflib-dev \
+    python3-dev
 
 # Create and use a Python virtual environment
 RUN python3 -m venv /app/venv
@@ -52,9 +61,11 @@ RUN pip install --no-cache-dir yfinance flask
 RUN mkdir -p /app/data/cache/charts && \
     chown -R node:node /app
 
-# Copy package files and install production dependencies only
+# Copy package files
 COPY package*.json ./
-RUN npm ci --omit=dev
+
+# Copy node_modules from builder stage
+COPY --from=builder /app/node_modules ./node_modules
 
 # Copy built files from builder stage
 COPY --from=builder /app/dist ./dist
