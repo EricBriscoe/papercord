@@ -78,219 +78,254 @@ const commands = new Collection<string, Command>();
 client.once(Events.ClientReady, async (readyClient) => {
     console.log(`Logged in as ${readyClient.user.tag}!`);
     
+    // Register slash commands with Discord API
     try {
-        // Register slash commands with Discord API
-        const commandData = Array.from(commands.values()).map(command => ({
-            name: command.name,
-            description: command.description,
-            options: command.options
-        }));
+        await registerCommands(readyClient);
         
-        const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN || '');
-        console.log('Started refreshing application (/) commands.');
+        // Setup scheduled tasks
+        setupDailyOptionsExpiryCheck();
+        setupMarginMonitoringTask();
+        setupLiquidationTask();
         
-        await rest.put(
-            Routes.applicationCommands(readyClient.user.id),
-            { body: commandData }
-        );
-        
-        console.log('Successfully reloaded application (/) commands.');
-        
-        /**
-         * Schedule daily job (24h) to process expired options contracts
-         * This ensures options that have passed their expiration date are properly
-         * settled according to their final intrinsic value
-         */
-        setInterval(async () => {
-            try {
-                console.log('Checking for expired options...');
-                const result = await optionsService.processExpiredOptions();
-                if (result.processed > 0) {
-                    console.log(`Processed ${result.processed} expired options, created ${result.marginCalls} margin calls.`);
-                }
-            } catch (error) {
-                console.error('Error processing expired options:', error);
-            }
-        }, 86400000); // 24 hours
-        
-        /**
-         * Schedule 4-hour job to monitor margin status and issue warnings
-         * This provides users with notifications when their positions are at risk
-         */
-        setInterval(async () => {
-            try {
-                console.log('Checking margin warnings and notifications...');
-                const usersWithOpenPositions = optionsDb.getUsersWithOpenPositions();
-                let warningsIssued = 0;
-                let callsIssued = 0;
-                
-                for (const userId of usersWithOpenPositions) {
-                    const result = await optionsService.processMarginCalls(userId);
-                    if (result.message.includes('Warning issued')) {
-                        warningsIssued++;
-                        console.log(`Margin warning for user ${userId}: ${result.message}`);
-                    } else if (result.message.includes('Margin call issued')) {
-                        callsIssued++;
-                        console.log(`Margin call for user ${userId}: ${result.message}`);
-                    }
-                }
-                
-                if (warningsIssued > 0 || callsIssued > 0) {
-                    console.log(`Issued ${warningsIssued} margin warnings and ${callsIssued} margin calls.`);
-                }
-            } catch (error) {
-                console.error('Error processing margin checks:', error);
-            }
-        }, 14400000); // 4 hours
-        
-        /**
-         * Schedule hourly job to automatically liquidate positions for severe margin violations
-         * Positions are liquidated when equity ratio falls below 20%
-         */
-        setInterval(async () => {
-            try {
-                console.log('Processing liquidations for severe margin violations...');
-                const usersWithOpenPositions = optionsDb.getUsersWithOpenPositions();
-                let totalLiquidated = 0;
-                
-                for (const userId of usersWithOpenPositions) {
-                    const marginStatus = await optionsService.calculateMarginStatus(userId);
-                    const equityRatio = marginStatus.equityRatio || 
-                        ((marginStatus.portfolioValue - marginStatus.marginUsed) / marginStatus.portfolioValue);
-                    
-                    if (equityRatio <= 0.2) {
-                        const result = await optionsService.processMarginCalls(userId);
-                        if (result.positionsLiquidated && result.positionsLiquidated > 0) {
-                            console.log(`Liquidated ${result.positionsLiquidated} positions for user ${userId}. ${result.message}`);
-                            totalLiquidated += result.positionsLiquidated;
-                        }
-                    }
-                }
-                
-                if (totalLiquidated > 0) {
-                    console.log(`Total positions liquidated: ${totalLiquidated}`);
-                }
-            } catch (error) {
-                console.error('Error processing liquidations:', error);
-            }
-        }, 3600000); // 1 hour
-        
-        /**
-         * Function to clean up small-value "dust" crypto positions and delisted cryptos
-         * Processes all users with crypto holdings to maintain clean portfolios
-         */
-        const cleanupCryptoPositions = async () => {
-            try {
-                console.log('Cleaning up worthless crypto positions...');
-                const { cryptoTradingService } = await import('./services/cryptoTradingService');
-                const { userDb } = await import('./database/operations');
-                
-                const usersWithCrypto = userDb.getUsersWithCryptoPositions();
-                let totalPositionsLiquidated = 0;
-                let totalValueCredited = 0;
-                let delistedPositionsLiquidated = 0;
-                
-                for (const userId of usersWithCrypto) {
-                    const result = await cryptoTradingService.cleanupWorthlessPositions(userId);
-                    
-                    if (result.success && result.positionsLiquidated > 0) {
-                        console.log(`Cleaned up ${result.positionsLiquidated} worthless crypto positions for user ${userId}`);
-                        console.log(result.message);
-                        
-                        totalPositionsLiquidated += result.positionsLiquidated;
-                        totalValueCredited += result.totalCredited;
-                        
-                        if (result.message.includes('delisted') || result.message.includes('100% loss')) {
-                            delistedPositionsLiquidated++;
-                        }
-                    }
-                }
-                
-                if (totalPositionsLiquidated > 0) {
-                    console.log(`Total crypto positions liquidated: ${totalPositionsLiquidated}, total value credited: ${totalValueCredited.toFixed(2)} USD`);
-                    if (delistedPositionsLiquidated > 0) {
-                        console.log(`Included ${delistedPositionsLiquidated} delisted cryptocurrencies liquidated at 100% loss`);
-                    }
-                } else {
-                    console.log('No worthless crypto positions were found that needed cleanup');
-                }
-            } catch (error) {
-                console.error('Error cleaning up worthless crypto positions:', error);
-            }
-        };
-        
-        /**
-         * Function to specifically check for and handle delisted cryptocurrencies
-         * This prevents users from retaining value in cryptocurrencies that no longer exist
-         */
-        const checkForDelistedCryptos = async () => {
-            try {
-                console.log('Checking for delisted cryptocurrencies...');
-                const { cryptoTradingService } = await import('./services/cryptoTradingService');
-                const { cryptoPortfolioDb, userDb } = await import('./database/operations');
-                
-                // Collect all positions across all users
-                const allPositions: CryptoPosition[] = [];
-                const usersWithCrypto = userDb.getUsersWithCryptoPositions();
-                
-                for (const userId of usersWithCrypto) {
-                    const userPositions = cryptoPortfolioDb.getUserPortfolio(userId);
-                    allPositions.push(...userPositions);
-                }
-                
-                // Get unique coin IDs for checking
-                const uniqueCoinIds = [...new Set(allPositions.map(p => p.coinId))];
-                console.log(`Checking ${uniqueCoinIds.length} unique cryptocurrencies for delisting status`);
-                
-                let delistedCoins = 0;
-                
-                for (const coinId of uniqueCoinIds) {
-                    const delistedCheck = await cryptoTradingService.isDelistedCoin(coinId);
-                    
-                    if (delistedCheck.delisted) {
-                        console.log(`Found delisted cryptocurrency: ${coinId} - ${delistedCheck.message}`);
-                        delistedCoins++;
-                        
-                        // Find affected users and process their positions
-                        const affectedUsers = [...new Set(allPositions
-                            .filter(p => p.coinId === coinId)
-                            .map(p => p.userId))];
-                        
-                        console.log(`${affectedUsers.length} users hold delisted cryptocurrency ${coinId}`);
-                        
-                        for (const userId of affectedUsers) {
-                            await cryptoTradingService.cleanupWorthlessPositions(userId);
-                        }
-                    }
-                }
-                
-                if (delistedCoins > 0) {
-                    console.log(`Total delisted cryptocurrencies processed: ${delistedCoins}`);
-                } else {
-                    console.log('No delisted cryptocurrencies found');
-                }
-            } catch (error) {
-                console.error('Error checking for delisted cryptocurrencies:', error);
-            }
-        };
-        
-        // Run crypto cleanup at startup and then daily
-        cleanupCryptoPositions();
-        setInterval(cleanupCryptoPositions, 86400000); // 24 hours
-        
-        // Run delisted crypto check at startup and then every 12 hours
-        checkForDelistedCryptos();
-        setInterval(checkForDelistedCryptos, 43200000); // 12 hours
-        
+        // Run crypto management tasks
+        await initializeCryptoManagement();
     } catch (error) {
-        console.error('Error registering commands:', error);
+        console.error('[Bot Initialization Error]:', error);
     }
 });
 
 /**
+ * Register all slash commands with Discord API
+ */
+async function registerCommands(readyClient: Client) {
+    console.log('Started refreshing application (/) commands.');
+    
+    const commandData = Array.from(commands.values()).map(command => ({
+        name: command.name,
+        description: command.description,
+        options: command.options
+    }));
+    
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN || '');
+    
+    try {
+        await rest.put(
+            Routes.applicationCommands(readyClient.user!.id),
+            { body: commandData }
+        );
+        
+        console.log('Successfully reloaded application (/) commands.');
+    } catch (error) {
+        console.error('Error registering Discord commands:', error);
+        throw error; // Re-throw to handle in the main initialization block
+    }
+}
+
+/**
+ * Setup daily check for expired options contracts
+ */
+function setupDailyOptionsExpiryCheck() {
+    setInterval(async () => {
+        try {
+            console.log('[Scheduled Task] Checking for expired options...');
+            const result = await optionsService.processExpiredOptions();
+            if (result.processed > 0) {
+                console.log(`Processed ${result.processed} expired options, created ${result.marginCalls} margin calls.`);
+            }
+        } catch (error) {
+            console.error('[Scheduled Task Error] Error processing expired options:', error);
+        }
+    }, 86400000); // 24 hours
+}
+
+/**
+ * Setup monitoring task for margin status
+ */
+function setupMarginMonitoringTask() {
+    setInterval(async () => {
+        try {
+            console.log('[Scheduled Task] Checking margin warnings and notifications...');
+            const usersWithOpenPositions = optionsDb.getUsersWithOpenPositions();
+            let warningsIssued = 0;
+            let callsIssued = 0;
+            
+            for (const userId of usersWithOpenPositions) {
+                const result = await optionsService.processMarginCalls(userId);
+                if (result.message.includes('Warning issued')) {
+                    warningsIssued++;
+                    console.log(`Margin warning for user ${userId}: ${result.message}`);
+                } else if (result.message.includes('Margin call issued')) {
+                    callsIssued++;
+                    console.log(`Margin call for user ${userId}: ${result.message}`);
+                }
+            }
+            
+            if (warningsIssued > 0 || callsIssued > 0) {
+                console.log(`Issued ${warningsIssued} margin warnings and ${callsIssued} margin calls.`);
+            }
+        } catch (error) {
+            console.error('[Scheduled Task Error] Error processing margin checks:', error);
+        }
+    }, 14400000); // 4 hours
+}
+
+/**
+ * Setup task for automatic liquidation of severe margin violations
+ */
+function setupLiquidationTask() {
+    setInterval(async () => {
+        try {
+            console.log('[Scheduled Task] Processing liquidations for severe margin violations...');
+            const usersWithOpenPositions = optionsDb.getUsersWithOpenPositions();
+            let totalLiquidated = 0;
+            
+            for (const userId of usersWithOpenPositions) {
+                const marginStatus = await optionsService.calculateMarginStatus(userId);
+                const equityRatio = marginStatus.equityRatio || 
+                    ((marginStatus.portfolioValue - marginStatus.marginUsed) / marginStatus.portfolioValue);
+                
+                if (equityRatio <= 0.2) {
+                    const result = await optionsService.processMarginCalls(userId);
+                    if (result.positionsLiquidated && result.positionsLiquidated > 0) {
+                        console.log(`Liquidated ${result.positionsLiquidated} positions for user ${userId}. ${result.message}`);
+                        totalLiquidated += result.positionsLiquidated;
+                    }
+                }
+            }
+            
+            if (totalLiquidated > 0) {
+                console.log(`Total positions liquidated: ${totalLiquidated}`);
+            }
+        } catch (error) {
+            console.error('[Scheduled Task Error] Error processing liquidations:', error);
+        }
+    }, 3600000); // 1 hour
+}
+
+/**
+ * Function to clean up small-value "dust" crypto positions and delisted cryptos
+ * Processes all users with crypto holdings to maintain clean portfolios
+ */
+const cleanupCryptoPositions = async () => {
+    try {
+        console.log('Cleaning up worthless crypto positions...');
+        const { cryptoTradingService } = await import('./services/cryptoTradingService');
+        const { userDb } = await import('./database/operations');
+        
+        const usersWithCrypto = userDb.getUsersWithCryptoPositions();
+        let totalPositionsLiquidated = 0;
+        let totalValueCredited = 0;
+        let delistedPositionsLiquidated = 0;
+        
+        for (const userId of usersWithCrypto) {
+            const result = await cryptoTradingService.cleanupWorthlessPositions(userId);
+            
+            if (result.success && result.positionsLiquidated > 0) {
+                console.log(`Cleaned up ${result.positionsLiquidated} worthless crypto positions for user ${userId}`);
+                console.log(result.message);
+                
+                totalPositionsLiquidated += result.positionsLiquidated;
+                totalValueCredited += result.totalCredited;
+                
+                if (result.message.includes('delisted') || result.message.includes('100% loss')) {
+                    delistedPositionsLiquidated++;
+                }
+            }
+        }
+        
+        if (totalPositionsLiquidated > 0) {
+            console.log(`Total crypto positions liquidated: ${totalPositionsLiquidated}, total value credited: ${totalValueCredited.toFixed(2)} USD`);
+            if (delistedPositionsLiquidated > 0) {
+                console.log(`Included ${delistedPositionsLiquidated} delisted cryptocurrencies liquidated at 100% loss`);
+            }
+        } else {
+            console.log('No worthless crypto positions were found that needed cleanup');
+        }
+    } catch (error) {
+        console.error('Error cleaning up worthless crypto positions:', error);
+    }
+};
+
+/**
+ * Function to specifically check for and handle delisted cryptocurrencies
+ * This prevents users from retaining value in cryptocurrencies that no longer exist
+ */
+const checkForDelistedCryptos = async () => {
+    try {
+        console.log('Checking for delisted cryptocurrencies...');
+        const { cryptoTradingService } = await import('./services/cryptoTradingService');
+        const { cryptoPortfolioDb, userDb } = await import('./database/operations');
+        
+        // Collect all positions across all users
+        const allPositions: CryptoPosition[] = [];
+        const usersWithCrypto = userDb.getUsersWithCryptoPositions();
+        
+        for (const userId of usersWithCrypto) {
+            const userPositions = cryptoPortfolioDb.getUserPortfolio(userId);
+            allPositions.push(...userPositions);
+        }
+        
+        // Get unique coin IDs for checking
+        const uniqueCoinIds = [...new Set(allPositions.map(p => p.coinId))];
+        console.log(`Checking ${uniqueCoinIds.length} unique cryptocurrencies for delisting status`);
+        
+        let delistedCoins = 0;
+        
+        for (const coinId of uniqueCoinIds) {
+            const delistedCheck = await cryptoTradingService.isDelistedCoin(coinId);
+            
+            if (delistedCheck.delisted) {
+                console.log(`Found delisted cryptocurrency: ${coinId} - ${delistedCheck.message}`);
+                delistedCoins++;
+                
+                // Find affected users and process their positions
+                const affectedUsers = [...new Set(allPositions
+                    .filter(p => p.coinId === coinId)
+                    .map(p => p.userId))];
+                
+                console.log(`${affectedUsers.length} users hold delisted cryptocurrency ${coinId}`);
+                
+                for (const userId of affectedUsers) {
+                    await cryptoTradingService.cleanupWorthlessPositions(userId);
+                }
+            }
+        }
+        
+        if (delistedCoins > 0) {
+            console.log(`Total delisted cryptocurrencies processed: ${delistedCoins}`);
+        } else {
+            console.log('No delisted cryptocurrencies found');
+        }
+    } catch (error) {
+        console.error('Error checking for delisted cryptocurrencies:', error);
+    }
+};
+
+/**
+ * Initialize crypto management tasks
+ */
+async function initializeCryptoManagement() {
+    try {
+        console.log('[Initialization] Starting crypto management services...');
+        
+        // Run crypto cleanup at startup and then daily
+        await cleanupCryptoPositions();
+        setInterval(cleanupCryptoPositions, 86400000); // 24 hours
+        
+        // Run delisted crypto check at startup and then every 12 hours
+        await checkForDelistedCryptos();
+        setInterval(checkForDelistedCryptos, 43200000); // 12 hours
+        
+        console.log('[Initialization] Crypto management services initialized successfully');
+    } catch (error) {
+        console.error('[Initialization Error] Failed to initialize crypto management:', error);
+    }
+}
+
+/**
  * Discord interaction handler for slash commands
  * Processes incoming commands and handles execution errors
- * With added timing diagnostics and immediate acknowledgment for Docker environments
+ * With improved error handling and logging
  */
 client.on(Events.InteractionCreate, async interaction => {
     if (!interaction.isChatInputCommand()) return;
@@ -300,55 +335,49 @@ client.on(Events.InteractionCreate, async interaction => {
     
     // Record start time for diagnostics
     const startTime = Date.now();
-    
-    // Log the interaction received time with microsecond precision
-    console.log(`[${new Date().toISOString()}] Interaction received: ${interaction.commandName} (ID: ${interaction.id})`);
-    
+    const timestamp = new Date().toISOString();
+        
+    // Immediately acknowledge the interaction to extend processing time
     try {
-        // Immediately acknowledge the interaction to prevent "Unknown Interaction" errors
-        // This gives us more time to process the actual command logic
-        try {
-            await interaction.deferReply();
-            const ackTime = Date.now();
-            console.log(`[${new Date().toISOString()}] Acknowledged interaction: ${interaction.commandName} in ${ackTime - startTime}ms`);
-        } catch (ackError) {
-            // If we get an "Unknown Interaction" error here, the interaction has already expired
-            if (ackError instanceof DiscordAPIError && ackError.code === 10062) {
-                console.log(`[${new Date().toISOString()}] Interaction ${interaction.id} expired before acknowledgment (${Date.now() - startTime}ms)`);
-                return; // Stop processing, the interaction is already invalid
-            }
-            console.error(`Error acknowledging interaction:`, ackError);
+        await interaction.deferReply();
+        
+        // Log the interaction received
+        console.log(`[${timestamp}] Interaction received: ${interaction.commandName} (ID: ${interaction.id})`);
+        console.log(`[${new Date().toISOString()}] Acknowledged interaction: ${interaction.commandName} in ${Date.now() - startTime}ms`);
+    } catch (error) {
+        // Handle expired interactions
+        if (error instanceof DiscordAPIError && error.code === 10062) {
+            console.log(`[${new Date().toISOString()}] Interaction ${interaction.id} expired before acknowledgment (${Date.now() - startTime}ms)`);
+            return; // Stop processing, the interaction is already invalid
         }
         
-        // Now execute the command with our extended time window
+        console.error(`[${new Date().toISOString()}] Error acknowledging interaction:`, error);
+        return; // Cannot proceed without acknowledgment
+    }
+    
+    // Execute the command with our extended time window
+    try {
         await command.execute(interaction);
-        const endTime = Date.now();
-        console.log(`[${new Date().toISOString()}] Completed command: ${interaction.commandName} in ${endTime - startTime}ms`);
-        
+        console.log(`[${new Date().toISOString()}] Completed command: ${interaction.commandName} in ${Date.now() - startTime}ms`);
     } catch (error) {
-        console.error(`Error executing command ${interaction.commandName}:`, error);
+        console.error(`[${new Date().toISOString()}] Error executing command ${interaction.commandName}:`, error);
+        
+        // Send error message to user
+        const errorMessage = 'There was an error executing this command!';
         
         try {
-            const errorMessage = 'There was an error executing this command!';
-            
             if (interaction.replied) {
                 await interaction.followUp({ content: errorMessage, ephemeral: true });
-            } else if (interaction.deferred) {
-                await interaction.editReply({ content: errorMessage });
             } else {
-                // Unlikely to reach here since we defer immediately, but just in case
-                try {
-                    await interaction.reply({ content: errorMessage, ephemeral: true });
-                } catch (replyError) {
-                    if (replyError instanceof DiscordAPIError && replyError.code === 10062) {
-                        console.log(`[${new Date().toISOString()}] Failed to send error message - interaction expired`);
-                    } else {
-                        throw replyError;
-                    }
-                }
+                await interaction.editReply({ content: errorMessage });
             }
-        } catch (e) {
-            console.error('Error responding to command error:', e);
+        } catch (responseError) {
+            // Handle errors during error response
+            if (responseError instanceof DiscordAPIError && responseError.code === 10062) {
+                console.log(`[${new Date().toISOString()}] Failed to send error message - interaction expired`);
+            } else {
+                console.error(`[${new Date().toISOString()}] Error responding to command error:`, responseError);
+            }
         }
     }
 });
