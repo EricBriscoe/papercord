@@ -290,6 +290,7 @@ client.once(Events.ClientReady, async (readyClient) => {
 /**
  * Discord interaction handler for slash commands
  * Processes incoming commands and handles execution errors
+ * With added timing diagnostics and immediate acknowledgment for Docker environments
  */
 client.on(Events.InteractionCreate, async interaction => {
     if (!interaction.isChatInputCommand()) return;
@@ -297,18 +298,54 @@ client.on(Events.InteractionCreate, async interaction => {
     const command = commands.get(interaction.commandName);
     if (!command) return;
     
+    // Record start time for diagnostics
+    const startTime = Date.now();
+    
+    // Log the interaction received time with microsecond precision
+    console.log(`[${new Date().toISOString()}] Interaction received: ${interaction.commandName} (ID: ${interaction.id})`);
+    
     try {
+        // Immediately acknowledge the interaction to prevent "Unknown Interaction" errors
+        // This gives us more time to process the actual command logic
+        try {
+            await interaction.deferReply();
+            const ackTime = Date.now();
+            console.log(`[${new Date().toISOString()}] Acknowledged interaction: ${interaction.commandName} in ${ackTime - startTime}ms`);
+        } catch (ackError) {
+            // If we get an "Unknown Interaction" error here, the interaction has already expired
+            if (ackError instanceof DiscordAPIError && ackError.code === 10062) {
+                console.log(`[${new Date().toISOString()}] Interaction ${interaction.id} expired before acknowledgment (${Date.now() - startTime}ms)`);
+                return; // Stop processing, the interaction is already invalid
+            }
+            console.error(`Error acknowledging interaction:`, ackError);
+        }
+        
+        // Now execute the command with our extended time window
         await command.execute(interaction);
+        const endTime = Date.now();
+        console.log(`[${new Date().toISOString()}] Completed command: ${interaction.commandName} in ${endTime - startTime}ms`);
+        
     } catch (error) {
         console.error(`Error executing command ${interaction.commandName}:`, error);
         
         try {
             const errorMessage = 'There was an error executing this command!';
             
-            if (interaction.deferred || interaction.replied) {
-                await interaction.editReply(errorMessage);
+            if (interaction.replied) {
+                await interaction.followUp({ content: errorMessage, ephemeral: true });
+            } else if (interaction.deferred) {
+                await interaction.editReply({ content: errorMessage });
             } else {
-                await interaction.reply({ content: errorMessage, ephemeral: true });
+                // Unlikely to reach here since we defer immediately, but just in case
+                try {
+                    await interaction.reply({ content: errorMessage, ephemeral: true });
+                } catch (replyError) {
+                    if (replyError instanceof DiscordAPIError && replyError.code === 10062) {
+                        console.log(`[${new Date().toISOString()}] Failed to send error message - interaction expired`);
+                    } else {
+                        throw replyError;
+                    }
+                }
             }
         } catch (e) {
             console.error('Error responding to command error:', e);

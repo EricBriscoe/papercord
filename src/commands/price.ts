@@ -34,11 +34,20 @@ export const priceCommand: Command = {
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction) => {
-        await interaction.deferReply();
+        // Only defer if not already deferred by the main handler
+        if (!interaction.deferred) {
+            await interaction.deferReply().catch(e => {
+                console.error(`Failed to defer reply in price command: ${e.message}`);
+                // Continue execution even if deferral fails
+            });
+        }
         
         const symbol = interaction.options.getString('symbol', true);
+        const commandStartTime = Date.now();
         
         try {
+            console.log(`Fetching stock data for symbol: ${symbol}`);
+            
             // Fetch stock data and company info
             const stockData = await stockService.getStockPrice(symbol);
             const companyInfo = await stockService.getCompanyInfo(symbol);
@@ -48,9 +57,19 @@ export const priceCommand: Command = {
                 return;
             }
 
+            // Log timing for performance diagnostics
+            console.log(`Fetched stock data in ${Date.now() - commandStartTime}ms - generating chart for ${symbol}`);
+
             // Generate initial chart (default to 1 month timeframe)
             const defaultTimeFrame = TimeFrame.MONTH;
-            const chartPath = await generateStockPriceChart(symbol, defaultTimeFrame);
+            let chartPath: string | null = null;
+            try {
+                chartPath = await generateStockPriceChart(symbol, defaultTimeFrame);
+                console.log(`Chart generated for ${symbol} in ${Date.now() - commandStartTime}ms`);
+            } catch (chartError) {
+                console.error(`Error generating chart for ${symbol}:`, chartError);
+                // Continue without chart if there's an error
+            }
             
             // At this point we know stockData.price is not null
             const currentPrice = stockData.price; // This is guaranteed to be a number now
@@ -60,22 +79,37 @@ export const priceCommand: Command = {
             
             // Create buttons for time frames
             const buttonRows = createTimeFrameButtons(defaultTimeFrame);
-                
-            // Prepare attachment
-            const attachment = new AttachmentBuilder(chartPath, {
-                name: `${symbol.toLowerCase()}-chart.png`,
-                description: `Price history chart for ${symbol.toUpperCase()}`
-            });
             
-            // Update embed to reference the attachment
-            embed.setImage(`attachment://${symbol.toLowerCase()}-chart.png`);
+            // Initialize response object
+            const responseOptions: any = {
+                embeds: [embed],
+                components: buttonRows
+            };
+            
+            // Add chart if we were able to generate one
+            if (chartPath) {
+                try {
+                    // Prepare attachment
+                    const attachment = new AttachmentBuilder(chartPath, {
+                        name: `${symbol.toLowerCase()}-chart.png`,
+                        description: `Price history chart for ${symbol.toUpperCase()}`
+                    });
+                    
+                    // Update embed to reference the attachment
+                    embed.setImage(`attachment://${symbol.toLowerCase()}-chart.png`);
+                    
+                    // Add attachment to response options
+                    responseOptions.files = [attachment];
+                } catch (attachmentError) {
+                    console.error(`Error creating attachment for ${symbol}:`, attachmentError);
+                    // Continue without chart attachment if there's an error
+                }
+            }
+            
+            console.log(`Sending response for ${symbol} after ${Date.now() - commandStartTime}ms`);
             
             // Send the initial reply with buttons
-            const reply = await interaction.editReply({
-                embeds: [embed],
-                files: [attachment],
-                components: buttonRows
-            });
+            const reply = await interaction.editReply(responseOptions);
             
             // Create collector to handle button interactions
             const collector = reply.createMessageComponentCollector({ 
@@ -92,37 +126,66 @@ export const priceCommand: Command = {
                     const selectedTimeFrame = buttonInteraction.customId.split(':')[1] as TimeFrame;
                     
                     // Generate new chart
-                    const newChartPath = await generateStockPriceChart(symbol, selectedTimeFrame);
+                    let newChartPath: string | null = null;
+                    try {
+                        newChartPath = await generateStockPriceChart(symbol, selectedTimeFrame);
+                    } catch (chartError) {
+                        console.error(`Error generating chart for ${symbol} with timeframe ${selectedTimeFrame}:`, chartError);
+                        await buttonInteraction.followUp({
+                            content: `Error generating chart. Please try again.`,
+                            ephemeral: true
+                        });
+                        return;
+                    }
                     
                     // Create updated embed and buttons
                     const updatedEmbed = createStockEmbed(symbol, currentPrice, companyInfo);
                     const updatedButtonRows = createTimeFrameButtons(selectedTimeFrame);
                     
-                    // Create new attachment
-                    const newAttachment = new AttachmentBuilder(newChartPath, {
-                        name: `${symbol.toLowerCase()}-chart.png`,
-                        description: `${timeFrameLabels[selectedTimeFrame]} price history chart for ${symbol.toUpperCase()}`
-                    });
+                    // Initialize update options
+                    const updateOptions: any = {
+                        embeds: [updatedEmbed],
+                        components: updatedButtonRows
+                    };
                     
-                    // Update embed with attachment
-                    updatedEmbed.setImage(`attachment://${symbol.toLowerCase()}-chart.png`);
+                    // Add chart if we were able to generate one
+                    if (newChartPath) {
+                        try {
+                            // Create new attachment
+                            const newAttachment = new AttachmentBuilder(newChartPath, {
+                                name: `${symbol.toLowerCase()}-chart.png`,
+                                description: `${timeFrameLabels[selectedTimeFrame]} price history chart for ${symbol.toUpperCase()}`
+                            });
+                            
+                            // Update embed with attachment
+                            updatedEmbed.setImage(`attachment://${symbol.toLowerCase()}-chart.png`);
+                            
+                            // Add attachment to update options
+                            updateOptions.files = [newAttachment];
+                        } catch (attachmentError) {
+                            console.error(`Error creating attachment for ${symbol}:`, attachmentError);
+                            // Continue without chart attachment if there's an error
+                        }
+                    }
                     
                     // Edit the original reply with new chart
-                    await buttonInteraction.editReply({
-                        embeds: [updatedEmbed],
-                        files: [newAttachment],
-                        components: updatedButtonRows
-                    });
+                    await buttonInteraction.editReply(updateOptions);
                     
-                    // Clean up old chart file
-                    cleanupChartFile(newChartPath);
+                    // Clean up chart file
+                    if (newChartPath) {
+                        cleanupChartFile(newChartPath);
+                    }
                     
                 } catch (error) {
-                    console.error('Error handling time frame button:', error);
-                    await buttonInteraction.followUp({
-                        content: `Error generating ${symbol} chart. Please try again.`,
-                        ephemeral: true
-                    });
+                    console.error(`Error handling time frame button for ${symbol}:`, error);
+                    try {
+                        await buttonInteraction.followUp({
+                            content: `Error updating chart. Please try again.`,
+                            ephemeral: true
+                        });
+                    } catch (followUpError) {
+                        console.error('Failed to send follow-up error message:', followUpError);
+                    }
                 }
             });
             
@@ -130,12 +193,16 @@ export const priceCommand: Command = {
             collector.on('end', async () => {
                 try {
                     const finalEmbed = createStockEmbed(symbol, currentPrice, companyInfo);
-                    finalEmbed.setImage(`attachment://${symbol.toLowerCase()}-chart.png`);
+                    if (chartPath) {
+                        finalEmbed.setImage(`attachment://${symbol.toLowerCase()}-chart.png`);
+                    }
                     
                     // Edit the reply to remove buttons
                     await reply.edit({
                         embeds: [finalEmbed],
                         components: []
+                    }).catch(err => {
+                        console.error('Failed to remove buttons after timeout:', err);
                     });
                 } catch (error) {
                     console.error('Error removing buttons after timeout:', error);
@@ -143,11 +210,19 @@ export const priceCommand: Command = {
             });
             
             // Clean up chart file
-            cleanupChartFile(chartPath);
+            if (chartPath) {
+                cleanupChartFile(chartPath);
+            }
+            
+            console.log(`Price command for ${symbol} completed in ${Date.now() - commandStartTime}ms`);
             
         } catch (error) {
-            console.error('Price command error:', error);
-            await interaction.editReply(`An error occurred while fetching the price for ${symbol}. Please try again later.`);
+            console.error(`Price command error for ${symbol}:`, error);
+            try {
+                await interaction.editReply(`An error occurred while fetching the price for ${symbol}. Please try again later.`);
+            } catch (editError) {
+                console.error('Failed to send error message:', editError);
+            }
         }
     }
 };
