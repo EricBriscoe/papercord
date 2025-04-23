@@ -2,6 +2,9 @@ FROM node:23-alpine AS builder
 
 WORKDIR /app
 
+# Install build dependencies for native modules
+RUN apk add --no-cache python3 make g++ cairo-dev jpeg-dev pango-dev giflib-dev
+
 # Copy package files and install dependencies
 COPY package*.json ./
 RUN npm ci
@@ -19,7 +22,7 @@ FROM node:23-alpine
 WORKDIR /app
 
 # Install Python and required packages
-RUN apk add --no-cache python3 py3-pip bash
+RUN apk add --no-cache python3 py3-pip bash cairo jpeg pango giflib
 
 # Create and use a Python virtual environment
 RUN python3 -m venv /app/venv
