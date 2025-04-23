@@ -341,6 +341,10 @@ client.on(Events.InteractionCreate, async interaction => {
     try {
         await interaction.deferReply();
         
+        // Ensure user exists in the database (auto-create if not)
+        const { userDb } = await import('./database/operations');
+        userDb.getOrCreateUser(interaction.user.id);
+
         // Log the interaction received
         console.log(`[${timestamp}] Interaction received: ${interaction.commandName} (ID: ${interaction.id})`);
         console.log(`[${new Date().toISOString()}] Acknowledged interaction: ${interaction.commandName} in ${Date.now() - startTime}ms`);
