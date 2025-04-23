@@ -21,8 +21,6 @@ export const leaderboardCommand: Command = {
     description: 'View a ranked list of users in your server by total account value',
     options: [],
     execute: async (interaction: ChatInputCommandInteraction) => {
-        await interaction.deferReply();
-        
         try {
             // Get all members of the current guild
             const guild = interaction.guild;

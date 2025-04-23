@@ -22,8 +22,6 @@ export const sellCommand: Command = {
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction) => {
-        await interaction.deferReply();
-        
         const symbol = interaction.options.getString('symbol', true);
         const quantityInput = interaction.options.getString('quantity', true);
         

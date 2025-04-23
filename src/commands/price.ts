@@ -34,14 +34,6 @@ export const priceCommand: Command = {
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction) => {
-        // Only defer if not already deferred by the main handler
-        if (!interaction.deferred) {
-            await interaction.deferReply().catch(e => {
-                console.error(`Failed to defer reply in price command: ${e.message}`);
-                // Continue execution even if deferral fails
-            });
-        }
-        
         const symbol = interaction.options.getString('symbol', true);
         const commandStartTime = Date.now();
         

@@ -23,8 +23,6 @@ export const closeOptionCommand: Command = {
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction) => {
-        await interaction.deferReply();
-        
         try {
             const positionId = interaction.options.getInteger('position_id', true);
             const partialQuantity = interaction.options.getInteger('quantity');

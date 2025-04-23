@@ -29,8 +29,6 @@ export const cryptoBuyCommand: Command = {
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction): Promise<void> => {
-        await interaction.deferReply();
-        
         try {
             const userId = interaction.user.id;
             const coinQuery = interaction.options.getString('coin', true);

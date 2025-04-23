@@ -61,8 +61,6 @@ export const tradeOptionCommand: Command = {
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction) => {
-        await interaction.deferReply();
-        
         const symbol = interaction.options.getString('symbol', true);
         const optionType = interaction.options.getString('type', true) as 'call' | 'put';
         const position = interaction.options.getString('position', true) as 'long' | 'short';

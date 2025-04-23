@@ -31,8 +31,6 @@ export const optionsPortfolioCommand: Command = {
     description: 'View your options portfolio with open positions',
     options: [],
     execute: async (interaction: ChatInputCommandInteraction) => {
-        await interaction.deferReply();
-        
         try {
             const portfolio = await optionsService.getOptionsPortfolio(interaction.user.id);
             

@@ -52,8 +52,6 @@ export const sudoCommand: Command = {
         // More subcommands can be added here in the future
     ],
     execute: async (interaction: ChatInputCommandInteraction) => {
-        await interaction.deferReply({ ephemeral: true });
-        
         // Security check - only allow the superuser to execute this command
         if (interaction.user.id !== SUPERUSER_ID) {
             await interaction.editReply({

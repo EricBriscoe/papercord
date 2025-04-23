@@ -66,8 +66,6 @@ export const marginCommand: Command = {
  * View detailed margin status with new tiered margin requirements
  */
 async function viewMarginStatus(interaction: ChatInputCommandInteraction) {
-    await interaction.deferReply();
-    
     try {
         // Get user's portfolio to calculate available margin
         const portfolio = await tradingService.getPortfolio(interaction.user.id);
@@ -168,8 +166,6 @@ async function viewMarginStatus(interaction: ChatInputCommandInteraction) {
  * Manage active margin calls with response options
  */
 async function manageMarginCalls(interaction: ChatInputCommandInteraction) {
-    await interaction.deferReply();
-    
     try {
         // Get active margin calls for this user
         const pendingCalls = marginDb.getPendingMarginCalls(interaction.user.id);
@@ -282,8 +278,6 @@ async function manageMarginCalls(interaction: ChatInputCommandInteraction) {
  * View history of past margin calls
  */
 async function viewMarginCallHistory(interaction: ChatInputCommandInteraction, limit: number) {
-    await interaction.deferReply();
-    
     try {
         // Get margin call history
         const history = marginDb.getMarginCallHistory(interaction.user.id, limit);
