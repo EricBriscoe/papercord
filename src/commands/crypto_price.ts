@@ -15,9 +15,6 @@ export const cryptoPriceCommand: Command = {
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction) => {
-        // Defer reply to give us time to fetch data
-        await interaction.deferReply();
-        
         const query = interaction.options.getString('coin')?.toLowerCase() || '';
         const userId = interaction.user.id;
         

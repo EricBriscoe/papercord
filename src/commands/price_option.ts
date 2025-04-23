@@ -39,8 +39,6 @@ export const priceOptionCommand: Command = {
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction) => {
-        await interaction.deferReply();
-        
         try {
             const symbol = interaction.options.getString('symbol', true).toUpperCase();
             const optionType = interaction.options.getString('type', true) as 'call' | 'put';

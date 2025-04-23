@@ -14,8 +14,6 @@ export const resetCommand: Command = {
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction) => {
-        await interaction.deferReply({ ephemeral: true });
-        
         const confirm = interaction.options.getString('confirm', true);
         
         if (confirm.toLowerCase() !== 'confirm') {

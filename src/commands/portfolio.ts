@@ -72,8 +72,6 @@ export const portfolioCommand: Command = {
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction) => {
-        await interaction.deferReply();
-        
         try {
             // Determine which view the user requested
             const viewOption = interaction.options.getString('view') || PortfolioView.SUMMARY;
