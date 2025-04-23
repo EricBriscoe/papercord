@@ -52,12 +52,6 @@ export const resetCommand: Command = {
             `);
             resetBalance.run(interaction.user.id);
             
-            // If user doesn't exist yet, create them
-            const insertUser = db.prepare(`
-                INSERT OR IGNORE INTO users (userId, cashBalance) VALUES (?, 100000.00)
-            `);
-            insertUser.run(interaction.user.id);
-            
             const embed = new EmbedBuilder()
                 .setTitle('Account Reset')
                 .setDescription('Your paper trading account has been reset to $100,000. All your positions, options, and transaction history have been cleared.')
