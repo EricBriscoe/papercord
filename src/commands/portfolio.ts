@@ -79,7 +79,19 @@ export const portfolioCommand: Command = {
             const viewOption = interaction.options.getString('view') || PortfolioView.SUMMARY;
             
             // Get target user ID - either the provided ID or the current user's ID
-            const targetUserId = interaction.options.getString('user') || interaction.user.id;
+            const userOption = interaction.options.getString('user');
+            let targetUserId = interaction.user.id;
+            
+            // Handle user mentions in the format <@123456789012345678>
+            if (userOption) {
+                // Extract user ID from mention format <@123456789012345678> or just use as-is
+                const mentionMatch = userOption.match(/<@!?(\d+)>/);
+                if (mentionMatch) {
+                    targetUserId = mentionMatch[1];
+                } else {
+                    targetUserId = userOption;
+                }
+            }
             
             // Get username to display
             let targetUsername = interaction.user.username;
