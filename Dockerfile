@@ -65,9 +65,6 @@ COPY src/python_services/ ./src/python_services/
 # Copy scripts directory
 COPY scripts/ ./scripts/
 
-# Copy data directory if needed (for database)
-COPY data/ ./data/
-
 # Ensure scripts are executable
 RUN chmod +x ./scripts/*.sh ./src/python_services/*.sh ./src/python_services/*.py
 
