@@ -77,9 +77,6 @@ export const tradingService = {
             // Record transaction
             transactionDb.addTransaction(userId, symbol, quantity, stockData.price, 'buy');
             
-            // Update covered call and cash-secured put status
-            await optionsService.updateSecuredStatus(userId);
-            
             // Check if spending cash has created a margin call situation
             const marginStatus = await optionsService.calculateMarginStatus(userId);
             if (marginStatus.utilizationPercentage > 95) {
@@ -139,9 +136,6 @@ export const tradingService = {
 
             // Record transaction
             transactionDb.addTransaction(userId, symbol, quantity, stockData.price, 'sell');
-            
-            // Update covered call status after selling shares
-            await optionsService.updateSecuredStatus(userId);
             
             // Check if selling shares that were covering options created a margin call
             const marginStatus = await optionsService.calculateMarginStatus(userId);

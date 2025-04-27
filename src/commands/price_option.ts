@@ -113,135 +113,138 @@ export const priceOptionCommand: Command = {
                 })
                 .setTimestamp();
             
-            // Create buttons for buy and sell actions
-            const buyButton = new ButtonBuilder()
-                .setCustomId(`buy_option:${symbol}:${optionType}:${strikePrice}:${expiration}:1`)
-                .setLabel('Buy 1 Contract')
-                .setStyle(ButtonStyle.Success);
-                
-            const sellButton = new ButtonBuilder()
-                .setCustomId(`sell_option:${symbol}:${optionType}:${strikePrice}:${expiration}:1`)
-                .setLabel('Write 1 Contract')
-                .setStyle(ButtonStyle.Danger);
-            
-            // Create action row with buttons
-            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(buyButton, sellButton);
-            
-            // Send the message with the embed and buttons
-            const response = await interaction.editReply({
-                embeds: [embed],
-                components: [row]
-            });
-            
-            // Create collector for button interactions
-            const collector = response.createMessageComponentCollector({
-                componentType: ComponentType.Button,
-                time: 3_600_000, // 1 hour timeout
-            });
-            
-            // Handle button interactions
-            collector.on('collect', async (buttonInteraction) => {
-                // Removed the user check to allow any user to click the buttons
-                await buttonInteraction.deferUpdate();
-                
-                // Parse the custom ID to get the option details
-                const [action, sym, type, strike, exp, qty] = buttonInteraction.customId.split(':');
-                const quantity = parseInt(qty);
-                const strikeValue = parseFloat(strike);
-                
-                try {
-                    let result;
-                    
-                    // Execute the appropriate action based on the button clicked
-                    if (action === 'buy_option') {
-                        // Buy option (long position)
-                        result = await optionsService.tradeOption(
-                            buttonInteraction.user.id, // Use the ID of the user who clicked the button
-                            sym,
-                            type as 'call' | 'put',
-                            'long',
-                            strikeValue,
-                            exp,
-                            quantity,
-                            false // Not applicable for long positions
-                        );
-                    } else {
-                        // Sell/write option (short position)
-                        result = await optionsService.tradeOption(
-                            buttonInteraction.user.id, // Use the ID of the user who clicked the button
-                            sym,
-                            type as 'call' | 'put',
-                            'short',
-                            strikeValue,
-                            exp,
-                            quantity,
-                            false // Not secured by default from quick buttons
-                        );
-                    }
-                    
-                    // Create a new embed based on the result
+            // Initial selection state
+            let selectedSide: 'buy' | 'write' = 'buy';
+            let selectedQty: number = 1;
+            let maxLong = 1;
+            let maxShort = 1;
+            // Calculate max contracts for the user
+            try {
+                const userId = interaction.user.id;
+                const cashBalance = optionsService['userDb']?.getCashBalance?.(userId) ?? 0;
+                maxLong = Math.floor(cashBalance / contractPrice) || 1;
+                const marginStatus = await optionsService.calculateMarginStatus(userId);
+                const marginPerContract = await optionsService.calculateMarginRequirement(
+                    symbol,
+                    optionType,
+                    strikePrice,
+                    'short',
+                    pricePerShare,
+                    false
+                );
+                if (marginPerContract > 0) {
+                    maxShort = Math.floor((marginStatus.availableMargin - marginStatus.marginUsed) / marginPerContract) || 1;
+                }
+            } catch {}
+            // Helper to build buttons
+            function buildButtons(side: 'buy' | 'write', qty: number) {
+                return [
+                    new ButtonBuilder()
+                        .setCustomId('buy_1')
+                        .setLabel('Buy 1')
+                        .setStyle(side === 'buy' && qty === 1 ? ButtonStyle.Primary : ButtonStyle.Secondary),
+                    new ButtonBuilder()
+                        .setCustomId('buy_max')
+                        .setLabel(`Buy Max (${maxLong})`)
+                        .setStyle(side === 'buy' && qty === maxLong ? ButtonStyle.Primary : ButtonStyle.Secondary),
+                    new ButtonBuilder()
+                        .setCustomId('write_1')
+                        .setLabel('Write 1')
+                        .setStyle(side === 'write' && qty === 1 ? ButtonStyle.Primary : ButtonStyle.Secondary),
+                    new ButtonBuilder()
+                        .setCustomId('write_max')
+                        .setLabel(`Write Max (${maxShort})`)
+                        .setStyle(side === 'write' && qty === maxShort ? ButtonStyle.Primary : ButtonStyle.Secondary),
+                    new ButtonBuilder()
+                        .setCustomId('confirm_order')
+                        .setLabel('Confirm Order')
+                        .setStyle(ButtonStyle.Success)
+                        .setDisabled(false)
+                ];
+            }
+            // Helper to build confirmation embed
+            function buildConfirmEmbed(side: 'buy' | 'write', qty: number) {
+                return new EmbedBuilder()
+                    .setTitle('Confirm Option Trade')
+                    .setDescription(`Are you sure you want to ${side === 'buy' ? 'buy' : 'write'} ${qty} contract(s) of ${optionSymbol}?`)
+                    .addFields(
+                        { name: 'Type', value: optionType.toUpperCase(), inline: true },
+                        { name: 'Strike', value: formatCurrency(strikePrice), inline: true },
+                        { name: 'Expiration', value: expirationDate.toLocaleDateString(), inline: true },
+                        { name: 'Quantity', value: `${qty}`, inline: true },
+                        { name: 'Price/Contract', value: formatCurrency(contractPrice), inline: true },
+                        { name: 'Total', value: formatCurrency(contractPrice * qty), inline: true }
+                    )
+                    .setColor(side === 'buy' ? '#00FF00' : '#FF0000')
+                    .setFooter({ text: `Confirm your trade | ${formatTimestamp(new Date())}` })
+                    .setTimestamp();
+            }
+            // Initial buttons and embed
+            let actionRow = new ActionRowBuilder<ButtonBuilder>().addComponents(...buildButtons(selectedSide, selectedQty));
+            let confirmEmbed = buildConfirmEmbed(selectedSide, selectedQty);
+            let msg = await interaction.editReply({ embeds: [embed, confirmEmbed], components: [actionRow] });
+            // Collector for button interactions
+            const collector = msg.createMessageComponentCollector({ componentType: ComponentType.Button, time: 3600000 });
+            collector.on('collect', async (btnInt) => {
+                if (btnInt.user.id !== interaction.user.id) {
+                    await btnInt.reply({ content: 'These buttons are not for you.', ephemeral: true });
+                    return;
+                }
+                await btnInt.deferUpdate();
+                if (btnInt.customId === 'buy_1') {
+                    selectedSide = 'buy'; selectedQty = 1;
+                } else if (btnInt.customId === 'buy_max') {
+                    selectedSide = 'buy'; selectedQty = maxLong;
+                } else if (btnInt.customId === 'write_1') {
+                    selectedSide = 'write'; selectedQty = 1;
+                } else if (btnInt.customId === 'write_max') {
+                    selectedSide = 'write'; selectedQty = maxShort;
+                } else if (btnInt.customId === 'confirm_order') {
+                    // Submit the order
+                    const result = await optionsService.tradeOption(
+                        interaction.user.id,
+                        symbol,
+                        optionType,
+                        selectedSide === 'buy' ? 'long' : 'short',
+                        strikePrice,
+                        expiration,
+                        selectedQty,
+                        false
+                    );
                     const resultEmbed = new EmbedBuilder()
-                        .setTitle(`Option Trade: ${sym.toUpperCase()} ${type.toUpperCase()}`)
+                        .setTitle(`Option Trade: ${symbol.toUpperCase()} ${optionType.toUpperCase()}`)
                         .setDescription(result.message)
                         .setColor(result.success ? '#00FF00' : '#FF0000')
-                        .setFooter({ 
-                            text: `Transaction time: ${formatTimestamp(new Date())}` 
-                        })
+                        .setFooter({ text: `Transaction time: ${formatTimestamp(new Date())}` })
                         .setTimestamp();
-                    
                     if (result.success && result.contract) {
-                        // Add detailed information about the contract
-                        resultEmbed.addFields([
-                            {
-                                name: 'Contract Details',
-                                value: `Symbol: ${optionSymbol}\n` +
-                                       `Strike: ${formatCurrency(strikeValue)}\n` +
-                                       `Expiration: ${new Date(exp).toLocaleDateString()}\n` +
-                                       `Quantity: ${quantity} contract${quantity > 1 ? 's' : ''}\n` +
-                                       `Price/Premium: ${formatCurrency(contractPrice)} per contract\n` +
-                                       `Total: ${formatCurrency(contractPrice * quantity)}`
-                            }
-                        ]);
-                        
-                        // Add margin information for short positions
-                        if (result.contract.position === 'short' && result.contract.marginRequired > 0) {
-                            resultEmbed.addFields({
-                                name: 'Margin Required',
-                                value: formatCurrency(result.contract.marginRequired)
-                            });
+                        resultEmbed.addFields({
+                            name: 'Contract Details',
+                            value: `Symbol: ${optionSymbol}\nStrike: ${formatCurrency(strikePrice)}\nExpiration: ${expirationDate.toLocaleDateString()}\nQuantity: ${selectedQty} contract${selectedQty > 1 ? 's' : ''}\nPrice/Premium: ${formatCurrency(contractPrice)} per contract\nTotal: ${formatCurrency(contractPrice * selectedQty)}`
+                        });
+                        if (
+                            result.contract.position === 'short' &&
+                            typeof result.contract.marginRequired === 'number' &&
+                            result.contract.marginRequired > 0
+                        ) {
+                            resultEmbed.addFields({ name: 'Margin Required', value: formatCurrency(result.contract.marginRequired) });
                         }
                     }
-                    
-                    // Reply with the result in a new message that mentions the user who clicked the button
-                    // Make the message ephemeral so only the user who clicked the button can see it
-                    await interaction.followUp({
-                        content: `<@${buttonInteraction.user.id}>, your option trade has been processed:`,
-                        embeds: [resultEmbed],
-                        ephemeral: true
-                    });
-                } catch (error) {
-                    console.error('Button interaction error:', error);
-                    await interaction.followUp({
-                        content: `<@${buttonInteraction.user.id}>, an error occurred: ${error instanceof Error ? error.message : 'Unknown error'}`,
-                        ephemeral: true
-                    });
+                    await btnInt.editReply({ embeds: [embed, resultEmbed], components: [] });
+                    collector.stop();
+                    return;
                 }
+                // Update buttons and confirmation embed
+                actionRow = new ActionRowBuilder<ButtonBuilder>().addComponents(...buildButtons(selectedSide, selectedQty));
+                confirmEmbed = buildConfirmEmbed(selectedSide, selectedQty);
+                await btnInt.editReply({ embeds: [embed, confirmEmbed], components: [actionRow] });
             });
-            
-            // When the collector times out, disable the buttons
             collector.on('end', async () => {
-                buyButton.setDisabled(true);
-                sellButton.setDisabled(true);
-                
+                // Disable all buttons
+                actionRow.components.forEach(btn => btn.setDisabled(true));
                 try {
-                    await interaction.editReply({
-                        embeds: [embed],
-                        components: [row]
-                    });
-                } catch (e) {
-                    // Message might be too old to edit, ignore errors
-                    console.log('Could not disable buttons on expired message');
-                }
+                    await interaction.editReply({ embeds: [embed, confirmEmbed], components: [actionRow] });
+                } catch {}
             });
         } catch (error) {
             console.error('Price option command error:', error);

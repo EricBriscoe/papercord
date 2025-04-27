@@ -1,7 +1,8 @@
-import { ApplicationCommandOptionType, ChatInputCommandInteraction, EmbedBuilder } from 'discord.js';
+import { ApplicationCommandOptionType, ChatInputCommandInteraction, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType } from 'discord.js';
 import { Command } from '../models/command';
 import { optionsService } from '../services/optionsService';
 import { formatCurrency, formatTimestamp } from '../utils/formatters';
+import { userDb, portfolioDb } from '../database/operations';
 
 export const tradeOptionCommand: Command = {
     name: 'trade_option',
@@ -52,129 +53,72 @@ export const tradeOptionCommand: Command = {
             type: ApplicationCommandOptionType.Integer,
             required: true,
             minValue: 1
-        },
-        {
-            name: 'secured',
-            description: 'Use covered calls or cash-secured puts (for short positions only)',
-            type: ApplicationCommandOptionType.Boolean,
-            required: false
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction) => {
         const symbol = interaction.options.getString('symbol', true);
         const optionType = interaction.options.getString('type', true) as 'call' | 'put';
-        const position = interaction.options.getString('position', true) as 'long' | 'short';
         const strikePrice = interaction.options.getNumber('strike', true);
         const expirationDate = interaction.options.getString('expiration', true);
         const quantity = interaction.options.getInteger('quantity', true);
-        const useSecured = interaction.options.getBoolean('secured') || false;
-        
+
         // Validate expiration date format
         const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+
         if (!dateRegex.test(expirationDate)) {
-            await interaction.editReply('Invalid expiration date format. Please use YYYY-MM-DD.');
+            await interaction.editReply({ content: 'Invalid expiration date format. Please use YYYY-MM-DD.' });
             return;
         }
-        
-        // Check if expiration date is in the past
+
         const expDate = new Date(expirationDate);
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        
+
         if (expDate < today) {
-            await interaction.editReply('Expiration date cannot be in the past.');
+            await interaction.editReply({ content: 'Expiration date cannot be in the past.' });
             return;
         }
-        
+
         try {
-            // Calculate option price to display in confirmation
             const priceResult = await optionsService.calculateOptionPrice(
                 symbol,
                 optionType,
                 strikePrice,
                 expirationDate
             );
-            
+
             if (!priceResult.price) {
-                await interaction.editReply(`Error calculating option price: ${priceResult.error || 'Unknown error'}`);
+                await interaction.editReply({ content: `Error calculating option price: ${priceResult.error || 'Unknown error'}` });
                 return;
             }
-            
-            // Calculate total cost/premium for the contracts
-            const CONTRACT_SIZE = 100; // 100 shares per contract
+
+            const CONTRACT_SIZE = 100;
             const contractPrice = priceResult.price * CONTRACT_SIZE;
-            const totalAmount = contractPrice * quantity;
-            
-            // For short positions, check margin requirement or secured status
-            let marginRequired = 0;
-            let isSecured = false;
-            
-            if (position === 'short') {
-                if (useSecured) {
-                    // Check if covered call or cash-secured put is possible
-                    if (optionType === 'call') {
-                        // Check if user has enough shares for covered call
-                        const isCovered = await optionsService.isCoveredCall(
-                            interaction.user.id,
-                            symbol,
-                            strikePrice,
-                            quantity
-                        );
-                        
-                        if (!isCovered) {
-                            await interaction.editReply(
-                                `You don't have enough shares of ${symbol} to write a covered call. ` +
-                                `You need at least ${quantity * CONTRACT_SIZE} shares.`
-                            );
-                            return;
-                        }
-                        isSecured = true;
-                    } else {
-                        // Check if user has enough cash for cash-secured put
-                        const isCashSecured = await optionsService.isCashSecuredPut(
-                            interaction.user.id,
-                            symbol,
-                            strikePrice,
-                            quantity
-                        );
-                        
-                        if (!isCashSecured) {
-                            await interaction.editReply(
-                                `You don't have enough cash to secure this put. ` +
-                                `You need ${formatCurrency(strikePrice * CONTRACT_SIZE * quantity)}.`
-                            );
-                            return;
-                        }
-                        isSecured = true;
-                    }
-                } else {
-                    // Calculate margin requirement
-                    marginRequired = await optionsService.calculateMarginRequirement(
-                        symbol,
-                        optionType,
-                        strikePrice,
-                        position,
-                        priceResult.price,
-                        false
-                    );
-                    
-                    // Check if user has enough margin available
-                    const { sufficient, marginStatus } = await optionsService.hasSufficientMargin(
-                        interaction.user.id,
-                        marginRequired * quantity
-                    );
-                    
-                    if (!sufficient) {
-                        await interaction.editReply(
-                            `You don't have enough margin available. ` +
-                            `Required: ${formatCurrency(marginRequired * quantity)}, ` +
-                            `Available: ${formatCurrency(marginStatus.availableMargin)}`
-                        );
-                        return;
-                    }
-                }
+
+            // Calculate max contracts for long (cash) and short (margin)
+            const userId = interaction.user.id;
+            const cashBalance = userDb.getCashBalance(userId);
+
+            // Max contracts for long (buy): floor(cash / contractPrice)
+            const maxLong = Math.floor(cashBalance / contractPrice);
+
+            // Max contracts for short (write):
+            let maxShort = 0;
+
+            const marginStatus = await optionsService.calculateMarginStatus(userId);
+            const marginPerContract = await optionsService.calculateMarginRequirement(
+                symbol,
+                optionType,
+                strikePrice,
+                'short',
+                priceResult.price,
+                false
+            );
+
+            if (marginPerContract > 0) {
+                maxShort = Math.floor((marginStatus.availableMargin - marginStatus.marginUsed) / marginPerContract);
             }
-            
+
             // Create option symbol for display
             const optionSymbol = optionsService.formatOptionSymbol(
                 symbol,
@@ -182,72 +126,194 @@ export const tradeOptionCommand: Command = {
                 optionType,
                 strikePrice
             );
-            
-            // Execute the trade
-            const result = await optionsService.tradeOption(
-                interaction.user.id,
-                symbol,
-                optionType,
-                position,
-                strikePrice,
-                expirationDate,
-                quantity,
-                useSecured
-            );
-            
-            if (!result.success) {
-                await interaction.editReply(result.message);
-                return;
-            }
-            
-            // Build success message embed
+
+            // Build embed
             const embed = new EmbedBuilder()
-                .setTitle(`Option Trade: ${symbol.toUpperCase()} ${optionType.toUpperCase()}`)
-                .setDescription(result.message)
-                .setColor('#00FF00')
+                .setTitle(`${symbol.toUpperCase()} ${optionType.toUpperCase()} Option`)
+                .setDescription(`Strike: $${strikePrice.toFixed(2)} | Expires: ${expDate.toLocaleDateString()}`)
+                .setColor(optionType === 'call' ? '#00FF00' : '#FF0000')
                 .addFields([
-                    {
-                        name: 'Contract Details',
-                        value: `Symbol: ${optionSymbol}\n` +
-                               `Strike: ${formatCurrency(strikePrice)}\n` +
-                               `Expiration: ${new Date(expirationDate).toLocaleDateString()}\n` +
-                               `Quantity: ${quantity} contract${quantity > 1 ? 's' : ''}\n` +
-                               `Price/Premium: ${formatCurrency(contractPrice)} per contract\n` +
-                               `Total: ${formatCurrency(totalAmount)}`
-                    }
-                ]);
-            
-            // Add margin/secured info for short positions
-            if (position === 'short') {
-                if (isSecured) {
-                    const securedText = optionType === 'call' ? 'Covered Call' : 'Cash-Secured Put';
-                    embed.addFields({
-                        name: 'Collateral',
-                        value: securedText
-                    });
-                } else {
-                    embed.addFields({
-                        name: 'Margin Required',
-                        value: formatCurrency(marginRequired * quantity)
-                    });
-                    
-                    // Get margin status after the trade
-                    const marginStatus = await optionsService.calculateMarginStatus(interaction.user.id);
-                    embed.addFields({
-                        name: 'Margin Usage',
-                        value: `${marginStatus.utilizationPercentage.toFixed(2)}% of available margin`
-                    });
-                }
+                    { name: 'Option Symbol', value: optionSymbol, inline: false },
+                    { name: 'Price per Contract', value: formatCurrency(contractPrice), inline: true },
+                    { name: 'Your Cash', value: formatCurrency(cashBalance), inline: true },
+                    { name: 'Max Buy', value: maxLong > 0 ? `${maxLong} contract(s)` : 'Insufficient cash', inline: true },
+                    { name: 'Max Write', value: maxShort > 0 ? `${maxShort} contract(s)` : 'Insufficient margin', inline: true },
+                ])
+                .setFooter({ text: `Calculated using Black-Scholes | ${formatTimestamp(new Date())}` })
+                .setTimestamp();
+
+            // Button logic
+            let buyBtn, writeBtn;
+
+            if (quantity > 0 && quantity <= maxLong) {
+                buyBtn = new ButtonBuilder()
+                    .setCustomId(`trade_buy_qty`)
+                    .setLabel(`Buy ${quantity} Contract${quantity > 1 ? 's' : ''}`)
+                    .setStyle(ButtonStyle.Success)
+                    .setDisabled(false);
+            } else {
+                buyBtn = new ButtonBuilder()
+                    .setCustomId(`trade_buy_1`)
+                    .setLabel('Buy 1 Contract')
+                    .setStyle(ButtonStyle.Success)
+                    .setDisabled(maxLong < 1);
             }
-            
-            embed.setFooter({ 
-                text: `Transaction time: ${formatTimestamp(new Date())}` 
-            }).setTimestamp();
-                
-            await interaction.editReply({ embeds: [embed] });
+
+            if (quantity > 0 && quantity <= maxShort) {
+                writeBtn = new ButtonBuilder()
+                    .setCustomId(`trade_write_qty`)
+                    .setLabel(`Write ${quantity} Contract${quantity > 1 ? 's' : ''}`)
+                    .setStyle(ButtonStyle.Danger)
+                    .setDisabled(false);
+            } else {
+                writeBtn = new ButtonBuilder()
+                    .setCustomId(`trade_write_1`)
+                    .setLabel('Write 1 Contract')
+                    .setStyle(ButtonStyle.Danger)
+                    .setDisabled(maxShort < 1);
+            }
+
+            const buyMaxBtn = new ButtonBuilder()
+                .setCustomId(`trade_buy_max`)
+                .setLabel(`Buy Max (${maxLong})`)
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(maxLong < 1);
+
+            const writeMaxBtn = new ButtonBuilder()
+                .setCustomId(`trade_write_max`)
+                .setLabel(`Write Max (${maxShort})`)
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(maxShort < 1);
+
+            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(buyBtn, buyMaxBtn, writeBtn, writeMaxBtn);
+
+            const response = await interaction.editReply({ embeds: [embed], components: [row] });
+
+            const collector = response.createMessageComponentCollector({ componentType: ComponentType.Button, time: 120_000 });
+
+            collector.on('collect', async (btnInt) => {
+                if (btnInt.user.id !== userId) {
+                    await btnInt.reply({ content: 'These buttons are not for you.', ephemeral: true });
+                    return;
+                }
+
+                await btnInt.deferUpdate();
+
+                let action: 'buy' | 'write';
+                let qty: number;
+
+                if (btnInt.customId === 'trade_buy_1') {
+                    action = 'buy';
+                    qty = 1;
+                } else if (btnInt.customId === 'trade_buy_max') {
+                    action = 'buy';
+                    qty = maxLong;
+                } else if (btnInt.customId === 'trade_buy_qty') {
+                    action = 'buy';
+                    qty = quantity;
+                } else if (btnInt.customId === 'trade_write_1') {
+                    action = 'write';
+                    qty = 1;
+                } else if (btnInt.customId === 'trade_write_max') {
+                    action = 'write';
+                    qty = maxShort;
+                } else if (btnInt.customId === 'trade_write_qty') {
+                    action = 'write';
+                    qty = quantity;
+                } else return;
+
+                // Show confirmation embed
+                const confirmEmbed = new EmbedBuilder()
+                    .setTitle('Confirm Option Trade')
+                    .setDescription(`Are you sure you want to ${action === 'buy' ? 'buy' : 'write'} ${qty} contract(s) of ${optionSymbol}?`)
+                    .addFields(
+                        { name: 'Type', value: optionType.toUpperCase(), inline: true },
+                        { name: 'Strike', value: formatCurrency(strikePrice), inline: true },
+                        { name: 'Expiration', value: new Date(expirationDate).toLocaleDateString(), inline: true },
+                        { name: 'Quantity', value: `${qty}`, inline: true },
+                        { name: 'Price/Contract', value: formatCurrency(contractPrice), inline: true },
+                        { name: 'Total', value: formatCurrency(contractPrice * qty), inline: true }
+                    )
+                    .setColor(action === 'buy' ? '#00FF00' : '#FF0000')
+                    .setFooter({ text: `Confirm your trade | ${formatTimestamp(new Date())}` })
+                    .setTimestamp();
+
+                const confirmBtn = new ButtonBuilder().setCustomId('trade_confirm').setLabel('Confirm').setStyle(ButtonStyle.Success);
+                const confirmRow = new ActionRowBuilder<ButtonBuilder>().addComponents(confirmBtn);
+
+                await btnInt.editReply({ embeds: [confirmEmbed], components: [confirmRow] });
+
+                // Wait for confirm
+                const confirmCollector = btnInt.message.createMessageComponentCollector({ componentType: ComponentType.Button, time: 120_000 });
+
+                confirmCollector.on('collect', async (confirmInt) => {
+                    if (confirmInt.user.id !== userId) {
+                        await confirmInt.reply({ content: 'These buttons are not for you.', ephemeral: true });
+                        return;
+                    }
+
+                    if (confirmInt.customId === 'trade_confirm') {
+                        // Execute trade
+                        const tradeResult = await optionsService.tradeOption(
+                            userId,
+                            symbol,
+                            optionType,
+                            action === 'buy' ? 'long' : 'short',
+                            strikePrice,
+                            expirationDate,
+                            qty,
+                            false
+                        );
+
+                        const resultEmbed = new EmbedBuilder()
+                            .setTitle(`Option Trade: ${symbol.toUpperCase()} ${optionType.toUpperCase()}`)
+                            .setDescription(tradeResult.message)
+                            .setColor(tradeResult.success ? '#00FF00' : '#FF0000')
+                            .setFooter({ text: `Transaction time: ${formatTimestamp(new Date())}` })
+                            .setTimestamp();
+
+                        if (tradeResult.success && tradeResult.contract) {
+                            resultEmbed.addFields({
+                                name: 'Contract Details',
+                                value: `Symbol: ${optionSymbol}\nStrike: ${formatCurrency(strikePrice)}\nExpiration: ${new Date(expirationDate).toLocaleDateString()}\nQuantity: ${qty} contract${qty > 1 ? 's' : ''}\nPrice/Premium: ${formatCurrency(contractPrice)} per contract\nTotal: ${formatCurrency(contractPrice * qty)}`
+                            });
+                            if (
+                                tradeResult.contract.position === 'short' &&
+                                typeof tradeResult.contract.marginRequired === 'number' &&
+                                tradeResult.contract.marginRequired > 0
+                            ) {
+                                resultEmbed.addFields({ name: 'Margin Required', value: formatCurrency(tradeResult.contract.marginRequired) });
+                            }
+                        }
+
+                        // Delete the original reply (removes the message with buttons)
+                        await interaction.deleteReply();
+                        // Send an ephemeral follow-up with the trade summary
+                        await interaction.followUp({ embeds: [resultEmbed], ephemeral: true });
+                        confirmCollector.stop();
+                        collector.stop();
+                    }
+                });
+
+                confirmCollector.on('end', async () => {
+                    try {
+                        await btnInt.editReply({ components: [] });
+                    } catch {}
+                });
+            });
+
+            collector.on('end', async () => {
+                buyBtn.setDisabled(true);
+                buyMaxBtn.setDisabled(true);
+                writeBtn.setDisabled(true);
+                writeMaxBtn.setDisabled(true);
+                try {
+                    await interaction.editReply({ embeds: [embed], components: [row] });
+                } catch {}
+            });
         } catch (error) {
             console.error('Trade option command error:', error);
-            await interaction.editReply(`An error occurred while processing your options trade: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            await interaction.editReply({ content: `An error occurred while processing your options trade: ${error instanceof Error ? error.message : 'Unknown error'}` });
         }
     }
 };

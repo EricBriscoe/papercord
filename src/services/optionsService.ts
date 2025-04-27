@@ -34,7 +34,6 @@ export interface OptionContract {
     profitLoss?: number;
     percentChange?: number;
     marginRequired?: number;
-    isSecured?: boolean;
 }
 
 /**
@@ -51,7 +50,6 @@ export interface OptionPosition {
     quantity: number;
     purchasePrice: number;
     marginRequired: number;
-    isSecured: boolean;
     status: 'open' | 'closed' | 'expired' | 'exercised' | 'liquidated';
 }
 
@@ -163,7 +161,7 @@ export const optionsService = {
         strikePrice: number,
         position: 'long' | 'short',
         optionPricePerShare: number,
-        isSecured: boolean
+        _isSecured: boolean
     ): Promise<number> {
         try {
             // Long positions don't require margin
@@ -180,11 +178,6 @@ export const optionsService = {
             const stockPrice = stockData.price;
             const contractPrice = optionPricePerShare * CONTRACT_SIZE;
             
-            // For secured options, no margin is required (cash secured put or covered call)
-            if (isSecured) {
-                return 0;
-            }
-
             // Calculate margin requirement
             if (optionType === 'call') {
                 // Short call margin = option premium + 20% of stock price
@@ -199,89 +192,6 @@ export const optionsService = {
         }
     },
     
-    /**
-     * Check if a call is covered by existing shares
-     */
-    async isCoveredCall(
-        userId: string,
-        symbol: string,
-        strikePrice: number,
-        quantity: number
-    ): Promise<boolean> {
-        try {
-            // Get user's position in the underlying stock
-            const position = portfolioDb.getUserPosition(userId, symbol);
-            
-            // No position or not enough shares to cover the calls
-            if (!position || position.quantity < quantity * CONTRACT_SIZE) {
-                return false;
-            }
-            
-            return true;
-        } catch (error) {
-            console.error('Covered call check error:', error);
-            return false;
-        }
-    },
-    
-    /**
-     * Check if a put is cash secured
-     */
-    async isCashSecuredPut(
-        userId: string,
-        symbol: string,
-        strikePrice: number,
-        quantity: number
-    ): Promise<boolean> {
-        try {
-            // Get user's cash balance
-            const cashBalance = userDb.getCashBalance(userId);
-            
-            // Calculate required cash to secure the puts
-            const requiredCash = strikePrice * CONTRACT_SIZE * quantity;
-            
-            // Not enough cash to secure the puts
-            if (cashBalance < requiredCash) {
-                return false;
-            }
-            
-            return true;
-        } catch (error) {
-            console.error('Cash secured put check error:', error);
-            return false;
-        }
-    },
-
-    /**
-     * Determine if an option position is secured (cash-secured put or covered call)
-     * @param position The option position
-     * @param currentStockPrice Current price of the underlying stock
-     * @param stockHolding Current quantity of stocks held for the same symbol
-     * @param cashBalance Available cash balance
-     * @returns boolean indicating if the position is secured
-     */
-    isSecuredPosition(
-        position: OptionPosition,
-        currentStockPrice: number,
-        stockHolding: number,
-        cashBalance: number
-    ): boolean {
-        if (position.position !== 'short') return false; // Only short positions can be secured
-
-        // Check if the position is already marked as secured in the database
-        if (position.isSecured) return true;
-
-        if (position.optionType === 'put') {
-            // Cash-secured put: User needs cash to buy shares at strike price
-            const cashNeeded = position.strikePrice * CONTRACT_SIZE * position.quantity;
-            return cashBalance >= cashNeeded;
-        } else {
-            // Covered call: User needs to own the underlying shares
-            const sharesNeeded = CONTRACT_SIZE * position.quantity;
-            return stockHolding >= sharesNeeded;
-        }
-    },
-
     /**
      * Calculate margin requirement for naked short options
      */
@@ -323,10 +233,6 @@ export const optionsService = {
         for (const option of options) {
             const stockData = await stockService.getStockPrice(option.symbol);
             const currentStockPrice = stockData.price || 0;
-            const stockHolding = stocks.find(s => s.symbol === option.symbol)?.quantity || 0;
-            
-            // Check if this is a secured position (cash-secured put or covered call)
-            const isSecured = this.isSecuredPosition(option, currentStockPrice, stockHolding, cash);
             
             if (option.position === 'long') {
                 // Long options don't require margin
@@ -334,14 +240,8 @@ export const optionsService = {
                 totalPortfolioValue += optionValue;
             } else {
                 // For short options
-                if (isSecured) {
-                    // Secured positions don't require additional margin
-                    // The security (cash or stock) is already accounted for in portfolio value
-                } else {
-                    // Calculate margin requirement for naked short options
-                    const marginRequirement = this.calculateShortOptionMargin(option, currentStockPrice);
-                    marginUsed += marginRequirement;
-                }
+                const marginRequirement = this.calculateShortOptionMargin(option, currentStockPrice);
+                marginUsed += marginRequirement;
             }
         }
         
@@ -461,7 +361,7 @@ export const optionsService = {
         strikePrice: number,
         expirationDate: string,
         quantity: number,
-        useSecured: boolean = false  // Whether to use cash-secured puts or covered calls
+        _useSecured: boolean = false
     ): Promise<{ success: boolean; message: string; contract?: OptionContract }> {
         try {
             // Validate input
@@ -488,7 +388,6 @@ export const optionsService = {
             // Get user's cash balance
             const cashBalance = userDb.getCashBalance(userId);
             
-            let isSecured = false;
             let marginRequired = 0;
             
             // Check if user can afford the trade
@@ -512,7 +411,7 @@ export const optionsService = {
                     strikePrice,
                     expirationDate,
                     'long',
-                    false // Long positions aren't secured
+                    false
                 );
                 
                 if (existingPosition) {
@@ -536,8 +435,8 @@ export const optionsService = {
                         expirationDate,
                         optionPricePerShare,
                         'long',
-                        0, // No margin required for long positions
-                        false // Long positions aren't secured
+                        0,
+                        false
                     );
                 }
                 
@@ -554,7 +453,7 @@ export const optionsService = {
                     'open',
                     0, // No profit/loss yet
                     0, // No margin required for long positions
-                    false // Long positions aren't secured
+                    false
                 );
                 
                 // Return success message
@@ -569,59 +468,30 @@ export const optionsService = {
                         position: 'long',
                         price: optionPricePerShare,
                         quantity,
-                        marginRequired: 0,
-                        isSecured: false
+                        marginRequired: 0
                     }
                 };
             } else {
                 // Shorting options (writing options)
-                // Check for covered call or cash secured put if requested
-                if (useSecured) {
-                    if (optionType === 'call') {
-                        // Check if user has enough shares to cover the call
-                        const isCovered = await this.isCoveredCall(userId, symbol, strikePrice, quantity);
-                        if (!isCovered) {
-                            return {
-                                success: false,
-                                message: `You don't have enough shares of ${symbol} to write covered calls. You need at least ${quantity * CONTRACT_SIZE} shares.`
-                            };
-                        }
-                        isSecured = true;
-                    } else {
-                        // Check if user has enough cash to secure the put
-                        const isCashSecured = await this.isCashSecuredPut(userId, symbol, strikePrice, quantity);
-                        if (!isCashSecured) {
-                            return {
-                                success: false,
-                                message: `You don't have enough cash to write cash-secured puts. You need $${(strikePrice * CONTRACT_SIZE * quantity).toFixed(2)}.`
-                            };
-                        }
-                        isSecured = true;
-                    }
-                }
-
-                // If not secured, calculate margin requirement
-                if (!isSecured) {
-                    marginRequired = await this.calculateMarginRequirement(
-                        symbol,
-                        optionType,
-                        strikePrice,
-                        'short',
-                        optionPricePerShare,
-                        false
-                    );
-                    
-                    const totalMarginRequired = marginRequired * quantity;
-                    
-                    // Check if user has enough available margin
-                    const { sufficient, marginStatus } = await this.hasSufficientMargin(userId, totalMarginRequired);
-                    
-                    if (!sufficient) {
-                        return {
-                            success: false,
-                            message: `Insufficient margin to write options. You need $${totalMarginRequired.toFixed(2)} but have $${(marginStatus.availableMargin - marginStatus.marginUsed).toFixed(2)} available.`
-                        };
-                    }
+                marginRequired = await this.calculateMarginRequirement(
+                    symbol,
+                    optionType,
+                    strikePrice,
+                    'short',
+                    optionPricePerShare,
+                    false
+                );
+                
+                const totalMarginRequired = marginRequired * quantity;
+                
+                // Check if user has enough available margin
+                const { sufficient, marginStatus } = await this.hasSufficientMargin(userId, totalMarginRequired);
+                
+                if (!sufficient) {
+                    return {
+                        success: false,
+                        message: `Insufficient margin to write options. You need $${totalMarginRequired.toFixed(2)} but have $${(marginStatus.availableMargin - marginStatus.marginUsed).toFixed(2)} available.`
+                    };
                 }
                 
                 // Update cash balance (writer receives premium)
@@ -635,7 +505,7 @@ export const optionsService = {
                     strikePrice,
                     expirationDate,
                     'short',
-                    isSecured
+                    false
                 );
                 
                 const totalMarginForPosition = marginRequired * quantity;
@@ -665,7 +535,7 @@ export const optionsService = {
                         optionPricePerShare,
                         'short',
                         totalMarginForPosition,
-                        isSecured
+                        false
                     );
                 }
                 
@@ -682,17 +552,13 @@ export const optionsService = {
                     'open',
                     0, // No profit/loss yet
                     totalMarginForPosition,
-                    isSecured
+                    false
                 );
                 
                 // Return success message
-                const securedText = isSecured 
-                    ? (optionType === 'call' ? 'covered call' : 'cash-secured put')
-                    : optionType;
-                
                 return { 
                     success: true, 
-                    message: `Successfully wrote ${quantity} ${securedText} option contract(s) for ${symbol} at $${contractPrice.toFixed(2)} per contract`,
+                    message: `Successfully wrote ${quantity} ${optionType} option contract(s) for ${symbol} at $${contractPrice.toFixed(2)} per contract`,
                     contract: {
                         symbol,
                         optionType,
@@ -701,8 +567,7 @@ export const optionsService = {
                         position: 'short',
                         price: optionPricePerShare,
                         quantity,
-                        marginRequired: totalMarginForPosition,
-                        isSecured
+                        marginRequired: totalMarginForPosition
                     }
                 };
             }
@@ -854,7 +719,7 @@ export const optionsService = {
                     'close',
                     pl,
                     marginToRelease,
-                    position.isSecured
+                    false
                 );
                 
                 return { 
@@ -960,8 +825,7 @@ export const optionsService = {
                     marketValue: Math.abs(positionValue),
                     profitLoss,
                     percentChange,
-                    marginRequired: pos.marginRequired,
-                    isSecured: pos.isSecured
+                    marginRequired: pos.marginRequired
                 };
             }));
             
@@ -1058,64 +922,33 @@ export const optionsService = {
                     if (isInTheMoney) {
                         const assignmentValue = intrinsicValue * CONTRACT_SIZE * option.quantity;
                         const user = userDb.getOrCreateUser(option.userId);
-                        if (option.isSecured) {
-                            if (option.optionType === 'call') {
-                                await tradingService.sellStock(
-                                    option.userId, 
-                                    option.symbol, 
-                                    option.quantity * CONTRACT_SIZE
-                                );
-                            } else {
-                                await tradingService.buyStock(
-                                    option.userId, 
-                                    option.symbol, 
-                                    option.quantity * CONTRACT_SIZE
-                                );
-                            }
-                            optionsDb.updatePositionStatus(option.id!, 'exercised');
-                            optionsDb.addTransaction(
+                        const newBalance = user.cashBalance - assignmentValue;
+                        if (newBalance < 0) {
+                            marginCallsCreated++;
+                            marginDb.createMarginCall(
                                 option.userId,
-                                option.symbol,
-                                option.optionType,
-                                option.quantity,
-                                option.strikePrice,
-                                option.expirationDate,
-                                intrinsicValue,
-                                'short',
-                                'exercise',
-                                -assignmentValue + (option.purchasePrice * CONTRACT_SIZE * option.quantity),
-                                0,
-                                true
+                                Math.abs(newBalance),
+                                `Assignment on ${option.quantity} ${option.symbol} ${option.optionType} options`
                             );
+                            userDb.updateCashBalance(option.userId, 0);
                         } else {
-                            const newBalance = user.cashBalance - assignmentValue;
-                            if (newBalance < 0) {
-                                marginCallsCreated++;
-                                marginDb.createMarginCall(
-                                    option.userId,
-                                    Math.abs(newBalance),
-                                    `Assignment on ${option.quantity} ${option.symbol} ${option.optionType} options`
-                                );
-                                userDb.updateCashBalance(option.userId, 0);
-                            } else {
-                                userDb.updateCashBalance(option.userId, newBalance);
-                            }
-                            optionsDb.updatePositionStatus(option.id!, 'exercised');
-                            optionsDb.addTransaction(
-                                option.userId,
-                                option.symbol,
-                                option.optionType,
-                                option.quantity,
-                                option.strikePrice,
-                                option.expirationDate,
-                                intrinsicValue,
-                                'short',
-                                'exercise',
-                                -assignmentValue + (option.purchasePrice * CONTRACT_SIZE * option.quantity),
-                                option.marginRequired,
-                                false
-                            );
+                            userDb.updateCashBalance(option.userId, newBalance);
                         }
+                        optionsDb.updatePositionStatus(option.id!, 'exercised');
+                        optionsDb.addTransaction(
+                            option.userId,
+                            option.symbol,
+                            option.optionType,
+                            option.quantity,
+                            option.strikePrice,
+                            option.expirationDate,
+                            intrinsicValue,
+                            'short',
+                            'exercise',
+                            -assignmentValue + (option.purchasePrice * CONTRACT_SIZE * option.quantity),
+                            option.marginRequired,
+                            false
+                        );
                     } else {
                         optionsDb.updatePositionStatus(option.id!, 'expired');
                         optionsDb.addTransaction(
@@ -1130,7 +963,7 @@ export const optionsService = {
                             'expire',
                             option.purchasePrice * CONTRACT_SIZE * option.quantity,
                             option.marginRequired,
-                            option.isSecured
+                            false
                         );
                     }
                 }
@@ -1275,19 +1108,9 @@ export const optionsService = {
                 }
                 
                 // Sort positions by priority for liquidation:
-                // 1. Unsecured positions first (they use margin)
-                // 2. Higher margin requirement positions first
+                // 1. Higher margin requirement positions first
                 const positionsToLiquidate = shortPositions
-                    .filter(p => !p.isSecured) // Only consider unsecured positions first
                     .sort((a, b) => b.marginRequired - a.marginRequired);
-                
-                if (positionsToLiquidate.length === 0) {
-                    return {
-                        success: true,
-                        message: 'All short positions are secured',
-                        marginStatus
-                    };
-                }
                 
                 let positionsLiquidated = 0;
                 const liquidationResults: string[] = [];
@@ -1358,90 +1181,6 @@ export const optionsService = {
                 message: error instanceof Error ? error.message : 'Unknown error while processing margin calls',
                 positionsLiquidated: 0
             };
-        }
-    },
-
-    /**
-     * Update secured status for all short positions
-     * This should be called whenever stock positions change to ensure accurate margin calculations
-     * @param userId User ID to update positions for
-     */
-    async updateSecuredStatus(userId: string): Promise<void> {
-        try {
-            // Get all open short positions
-            const shortPositions = optionsDb.getOpenPositions(userId)
-                .filter(p => p.position === 'short');
-            
-            if (shortPositions.length === 0) {
-                return; // No short positions to update
-            }
-            
-            // Get user's stock holdings
-            const stockPositions = portfolioDb.getUserPortfolio(userId);
-            const cash = userDb.getCashBalance(userId);
-            
-            // Group short positions by symbol
-            const positionsBySymbol: Record<string, OptionPosition[]> = {};
-            for (const position of shortPositions) {
-                if (!positionsBySymbol[position.symbol]) {
-                    positionsBySymbol[position.symbol] = [];
-                }
-                positionsBySymbol[position.symbol].push(position);
-            }
-            
-            // Process each symbol
-            for (const symbol in positionsBySymbol) {
-                const positions = positionsBySymbol[symbol];
-                const stockHolding = stockPositions.find(s => s.symbol === symbol)?.quantity || 0;
-                
-                // For each symbol, get the current stock price
-                const stockData = await stockService.getStockPrice(symbol);
-                const stockPrice = stockData.price || 0;
-                
-                // Process put positions first (cash secured puts)
-                const putPositions = positions.filter(p => p.optionType === 'put');
-                let remainingCash = cash;
-                
-                for (const position of putPositions) {
-                    const cashNeeded = position.strikePrice * CONTRACT_SIZE * position.quantity;
-                    const isSecured = remainingCash >= cashNeeded;
-                    
-                    // If status changed, update the database
-                    if (position.isSecured !== isSecured) {
-                        optionsDb.updatePositionSecuredStatus(position.id!, isSecured);
-                    }
-                    
-                    // Subtract the cash requirement if this position is secured
-                    if (isSecured) {
-                        remainingCash -= cashNeeded;
-                    }
-                }
-                
-                // Process call positions (covered calls)
-                const callPositions = positions.filter(p => p.optionType === 'call')
-                    // Sort by strike price (highest first) to prioritize covering higher strike options
-                    .sort((a, b) => b.strikePrice - a.strikePrice);
-                
-                let remainingShares = stockHolding;
-                
-                for (const position of callPositions) {
-                    const sharesNeeded = CONTRACT_SIZE * position.quantity;
-                    const isSecured = remainingShares >= sharesNeeded;
-                    
-                    // If status changed, update the database
-                    if (position.isSecured !== isSecured) {
-                        optionsDb.updatePositionSecuredStatus(position.id!, isSecured);
-                    }
-                    
-                    // Subtract the shares if this position is secured
-                    if (isSecured) {
-                        remainingShares -= sharesNeeded;
-                    }
-                }
-            }
-        } catch (error) {
-            console.error('Update secured status error:', error);
-            throw error;
         }
     },
 
@@ -1525,7 +1264,7 @@ export const optionsService = {
                     transactionType, // Use the mapped transaction type
                     profitLoss,
                     position.marginRequired,
-                    position.isSecured
+                    false
                 );
             }
             

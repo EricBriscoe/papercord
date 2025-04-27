@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   papercord:
     build: .  # Add this to build from local Dockerfile

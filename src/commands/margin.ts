@@ -392,7 +392,7 @@ async function handleClosePositions(
         }
         
         // Filter to show only positions that use margin (short positions)
-        const shortPositions = portfolio.positions.filter(pos => pos.position === 'short' && !pos.isSecured);
+        const shortPositions = portfolio.positions.filter(pos => pos.position === 'short');
         
         if (shortPositions.length === 0) {
             await interaction.editReply({
