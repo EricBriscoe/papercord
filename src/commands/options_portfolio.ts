@@ -127,12 +127,8 @@ export const optionsPortfolioCommand: Command = {
                         pos.strikePrice
                     );
                     
-                    const securedText = pos.isSecured ? 
-                        (pos.optionType === 'call' ? ' (Covered Call)' : ' (Cash-Secured Put)') : 
-                        '';
-                    
                     const positionDetails = [
-                        `**${optionSymbol}**${securedText}`,
+                        `**${optionSymbol}**`,
                         `Strike: ${formatCurrency(pos.strikePrice)}`,
                         `Expiration: ${pos.formattedExpiration || new Date(pos.expirationDate).toLocaleDateString()}`,
                         `Time to Expiry: ${Math.round(pos.timeToExpiry!)} days`,
