@@ -396,7 +396,7 @@ export const optionsDb = {
     getExpiredPositions(): OptionsPosition[] {
         const stmt = db.prepare(`
             SELECT * FROM options_positions
-            WHERE status = 'open' AND date(expirationDate) < date('now')
+            WHERE status = 'open' AND date(expirationDate) <= date('now')
         `);
         return stmt.all() as OptionsPosition[];
     },
