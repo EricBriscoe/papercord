@@ -120,9 +120,25 @@ async function registerCommands(readyClient: Client) {
 }
 
 /**
- * Setup daily check for expired options contracts
+ * Setup check for expired options contracts - runs at startup and every 4 hours
  */
 function setupDailyOptionsExpiryCheck() {
+    // Run immediately at startup
+    (async () => {
+        try {
+            console.log('[Startup] Checking for expired options...');
+            const result = await optionsService.processExpiredOptions();
+            if (result.processed > 0) {
+                console.log(`[Startup] Processed ${result.processed} expired options, created ${result.marginCalls} margin calls.`);
+            } else {
+                console.log('[Startup] No expired options found.');
+            }
+        } catch (error) {
+            console.error('[Startup Error] Error processing expired options:', error);
+        }
+    })();
+    
+    // Then set up interval to run every 4 hours
     setInterval(async () => {
         try {
             console.log('[Scheduled Task] Checking for expired options...');
@@ -133,7 +149,7 @@ function setupDailyOptionsExpiryCheck() {
         } catch (error) {
             console.error('[Scheduled Task Error] Error processing expired options:', error);
         }
-    }, 86400000); // 24 hours
+    }, 14400000); // 4 hours (reduced from 24 hours)
 }
 
 /**
