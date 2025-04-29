@@ -121,3 +121,17 @@ export function formatCryptoPrice(value: number): string {
     maximumFractionDigits: decimals
   }).format(value);
 }
+
+/**
+ * Format a number to a string with a specified number of significant figures
+ * Used for crypto values where precision is important
+ */
+export function formatCryptoSigFig(value: number, sigFigs: number = 2): string {
+  if (value === undefined || value === null || isNaN(value)) {
+    return '0';
+  }
+  // Use toPrecision for significant figures, then remove trailing zeros
+  const str = Number(value).toPrecision(sigFigs);
+  // Remove trailing decimal if present
+  return str.replace(/\.0+$/, '');
+}

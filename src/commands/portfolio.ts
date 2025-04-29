@@ -2,7 +2,7 @@ import { ApplicationCommandOptionType, ChatInputCommandInteraction, EmbedBuilder
 import { Command } from '../models/command';
 import { tradingService } from '../services/tradingService';
 import { cryptoTradingService } from '../services/cryptoTradingService';
-import { formatCurrency, formatNumber, formatTimestamp, formatCryptoAmount, formatCryptoPrice } from '../utils/formatters';
+import { formatCurrency, formatNumber, formatTimestamp, formatCryptoAmount, formatCryptoPrice, formatCryptoSigFig } from '../utils/formatters';
 import { userDb } from '../database/operations';
 import { optionsService } from '../services/optionsService';
 
@@ -854,16 +854,22 @@ async function showCryptoView(interaction: ChatInputCommandInteraction, portfoli
             .setTimestamp();
         currentPositions.forEach((pos: any) => {
             const profitLossSymbol = (pos.profitLossPercent || 0) >= 0 ? '📈' : '📉';
-            // Use the symbol as the link text in the value, and keep the name as the coin name only
-            const coinLink = pos.coinId ? `[${pos.symbol}](https://www.coingecko.com/en/coins/${pos.coinId})` : pos.symbol;
+            const coinEmoji = pos.emoji ? `${pos.emoji} ` : '';
+            const symbolLink = pos.coinId ? `[${pos.symbol}](https://www.coingecko.com/en/coins/${pos.coinId})` : pos.symbol;
+            const formattedQty = formatNumber(pos.quantity || 0, 2);
+            const avgBuy = formatCryptoPrice(pos.averagePurchasePrice || 0);
+            const currPrice = formatCryptoPrice(pos.currentPrice || 0);
+            const currValue = formatCurrency(pos.currentValue || 0);
+            const plValue = formatCurrency(pos.profitLoss || 0);
+            const plPercent = formatNumber(pos.profitLossPercent || 0, 2);
             embed.addFields({
-                name: `${pos.name}: ${formatCurrency(pos.currentValue || 0)} ${profitLossSymbol} ${(pos.profitLossPercent || 0).toFixed(2)}%`,
+                name: `${coinEmoji}${pos.name}` + `: ${currValue} ${profitLossSymbol} ${plPercent}%`,
                 value: [
-                    `${coinLink}`,
-                    `Quantity: ${formatNumber(pos.quantity || 0)}`,
-                    `Average Buy Price: ${formatCurrency(pos.averageBuyPrice || 0)}`,
-                    `Current Price: ${formatCurrency(pos.currentPrice || 0)}`,
-                    `P/L: ${profitLossSymbol} ${formatCurrency(pos.profitLoss || 0)} (${(pos.profitLossPercent || 0).toFixed(2)}%)`
+                    `Symbol: ${symbolLink}`,
+                    `Quantity: ${formattedQty}`,
+                    `Avg Buy Price: ${avgBuy}`,
+                    `Current Price: ${currPrice}`,
+                    `P/L: ${profitLossSymbol} ${plValue} (${plPercent}%)`
                 ].join('\n'),
                 inline: false
             });
