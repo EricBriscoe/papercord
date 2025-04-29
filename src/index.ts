@@ -8,7 +8,6 @@ import { historyCommand } from './commands/history';
 import { resetCommand } from './commands/reset';
 import { priceOptionCommand } from './commands/price_option';
 import { tradeOptionCommand } from './commands/trade_option';
-import { optionsPortfolioCommand } from './commands/options_portfolio';
 import { closeOptionCommand } from './commands/close_option';
 import { leaderboardCommand } from './commands/leaderboard';
 import { cryptoBuyCommand } from './commands/crypto_buy';
@@ -64,8 +63,7 @@ const commands = new Collection<string, Command>();
     buyCommand, sellCommand, portfolioCommand, priceCommand, 
     historyCommand, resetCommand,
     // Options trading
-    priceOptionCommand, tradeOptionCommand, 
-    optionsPortfolioCommand, closeOptionCommand,
+    priceOptionCommand, tradeOptionCommand, closeOptionCommand,
     // Crypto trading
     cryptoBuyCommand, cryptoSellCommand, cryptoPriceCommand,
     // Other commands

@@ -13,7 +13,8 @@ const POSITIONS_PER_PAGE = 5;
 enum PortfolioView {
     SUMMARY = 'summary',
     STOCKS = 'stocks',
-    CRYPTO = 'crypto'
+    CRYPTO = 'crypto',
+    OPTIONS = 'options' // Added options view
 }
 
 // Sort types for portfolio positions
@@ -40,9 +41,30 @@ const SORT_CYCLE = [
     SortType.PERCENT_CHANGE_LOW
 ];
 
+// Options view constants
+const OPTIONS_POSITIONS_PER_PAGE = 3;
+
+enum OptionSortType {
+    EXPIRATION_ASC = 'Expiration (Nearest)',
+    EXPIRATION_DESC = 'Expiration (Furthest)',
+    PROFIT_LOSS_HIGH = 'Profit/Loss (High to Low)',
+    PROFIT_LOSS_LOW = 'Profit/Loss (Low to High)',
+    SYMBOL_ASC = 'Symbol (A-Z)',
+    MARGIN_HIGH = 'Margin (High to Low)'
+}
+
+const OPTION_SORT_CYCLE = [
+    OptionSortType.EXPIRATION_ASC,
+    OptionSortType.SYMBOL_ASC,
+    OptionSortType.PROFIT_LOSS_HIGH,
+    OptionSortType.PROFIT_LOSS_LOW,
+    OptionSortType.MARGIN_HIGH,
+    OptionSortType.EXPIRATION_DESC
+];
+
 export const portfolioCommand: Command = {
     name: 'portfolio',
-    description: 'View your current portfolio including stocks and cryptocurrencies',
+    description: 'View your current portfolio including stocks, cryptocurrencies, and options',
     options: [
         {
             name: 'view',
@@ -61,6 +83,10 @@ export const portfolioCommand: Command = {
                 {
                     name: 'Crypto Only',
                     value: PortfolioView.CRYPTO
+                },
+                {
+                    name: 'Options Only',
+                    value: PortfolioView.OPTIONS
                 }
             ]
         },
@@ -142,7 +168,7 @@ export const portfolioCommand: Command = {
             // Show different views based on user selection
             switch (viewOption) {
                 case PortfolioView.SUMMARY:
-                    await showSummaryView(interaction, stockPortfolio, formattedCryptoPortfolio, portfolioSummary, targetUsername, targetUserId);
+                    await showSummaryView(interaction, stockPortfolio, formattedCryptoPortfolio, portfolioSummary, targetUsername, targetUserId, optionsPortfolio);
                     break;
                 case PortfolioView.STOCKS:
                     await showStocksView(interaction, stockPortfolio, targetUsername, targetUserId);
@@ -150,8 +176,11 @@ export const portfolioCommand: Command = {
                 case PortfolioView.CRYPTO:
                     await showCryptoView(interaction, formattedCryptoPortfolio, cashBalance, targetUsername, targetUserId);
                     break;
+                case PortfolioView.OPTIONS:
+                    await showOptionsView(interaction, optionsPortfolio, targetUsername, targetUserId);
+                    break;
                 default:
-                    await showSummaryView(interaction, stockPortfolio, formattedCryptoPortfolio, portfolioSummary, targetUsername, targetUserId);
+                    await showSummaryView(interaction, stockPortfolio, formattedCryptoPortfolio, portfolioSummary, targetUsername, targetUserId, optionsPortfolio);
             }
         } catch (error) {
             console.error('Portfolio command error:', error);
@@ -169,17 +198,19 @@ async function showSummaryView(
     cryptoPortfolio: any, 
     totalValue: any,
     targetUsername: string,
-    targetUserId: string
+    targetUserId: string,
+    optionsPortfolio?: any
 ) {
     // Check if portfolio is completely empty
     const hasStocks = stockPortfolio.positions && stockPortfolio.positions.length > 0;
     const hasCrypto = cryptoPortfolio.positions && cryptoPortfolio.positions.length > 0;
+    const hasOptions = optionsPortfolio && optionsPortfolio.positions && optionsPortfolio.positions.length > 0;
     
-    if (!hasStocks && !hasCrypto) {
+    if (!hasStocks && !hasCrypto && !hasOptions) {
         const embed = new EmbedBuilder()
             .setTitle(`${targetUsername}'s Portfolio`)
             .setColor('#0099ff')
-            .setDescription('Your portfolio is currently empty. Use the `/buy` or `/crypto_buy` commands to purchase assets.')
+            .setDescription('Your portfolio is currently empty. Use the `/buy`, `/crypto_buy`, or `/trade_option` commands to purchase assets.')
             .addFields({ 
                 name: 'Cash Balance', 
                 value: formatCurrency(totalValue.cashBalance), 
@@ -257,7 +288,9 @@ async function showSummaryView(
         let cryptoText = '';
         topCrypto.forEach((pos: any) => {
             const profitLossSymbol = (pos.profitLossPercent || 0) >= 0 ? '📈' : '📉';
-            cryptoText += `${pos.symbol}: ${formatCurrency(pos.currentValue || 0)} ${profitLossSymbol} ${(pos.profitLossPercent || 0).toFixed(2)}%\n`;
+            // Add CoinGecko link inline with the coin name
+            const coinLink = pos.coinId ? `[${pos.symbol}](https://www.coingecko.com/en/coins/${pos.coinId})` : pos.symbol;
+            cryptoText += `${coinLink}: ${formatCurrency(pos.currentValue || 0)} ${profitLossSymbol} ${(pos.profitLossPercent || 0).toFixed(2)}%\n`;
         });
         
         if (cryptoPortfolio.positions.length > 3) {
@@ -267,6 +300,26 @@ async function showSummaryView(
         embed.addFields({
             name: `Top Cryptocurrencies (${cryptoPortfolio.positions.length} total)`,
             value: cryptoText || 'None',
+            inline: false
+        });
+    }
+
+    if (hasOptions) {
+        // Sort options by market value and get top 3
+        const topOptions = [...optionsPortfolio.positions]
+            .sort((a, b) => (b.marketValue || 0) - (a.marketValue || 0))
+            .slice(0, 3);
+        let optionsText = '';
+        topOptions.forEach((pos: any) => {
+            const profitLossSymbol = (pos.profitLoss || 0) >= 0 ? '📈' : '📉';
+            optionsText += `${pos.symbol} ${pos.optionType.toUpperCase()} $${pos.strikePrice} (${pos.position}): ${formatCurrency(pos.marketValue || 0)} ${profitLossSymbol} ${(pos.percentChange || 0).toFixed(2)}%\n`;
+        });
+        if (optionsPortfolio.positions.length > 3) {
+            optionsText += `...and ${optionsPortfolio.positions.length - 3} more options`;
+        }
+        embed.addFields({
+            name: `Top Options (${optionsPortfolio.positions.length} total)`,
+            value: optionsText || 'None',
             inline: false
         });
     }
@@ -283,7 +336,12 @@ async function showSummaryView(
                 .setCustomId('view_crypto')
                 .setLabel('View Crypto')
                 .setStyle(ButtonStyle.Primary)
-                .setDisabled(!hasCrypto)
+                .setDisabled(!hasCrypto),
+            new ButtonBuilder()
+                .setCustomId('view_options')
+                .setLabel('View Options')
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(!hasOptions)
         );
     
     const message = await interaction.editReply({
@@ -309,6 +367,9 @@ async function showSummaryView(
         } else if (i.customId === 'view_crypto') {
             await i.update({ components: [] });
             await showCryptoView(interaction, cryptoPortfolio, totalValue.cashBalance, targetUsername, targetUserId);
+        } else if (i.customId === 'view_options') {
+            await i.update({ components: [] });
+            await showOptionsView(interaction, optionsPortfolio, targetUsername, targetUserId);
         }
     });
     
@@ -328,315 +389,9 @@ async function showSummaryView(
 }
 
 /**
- * Show the stocks view of the portfolio (stocks only)
- */
-async function showStocksView(interaction: ChatInputCommandInteraction, portfolio: any, targetUsername: string, targetUserId: string) {
-    // If portfolio is empty, show simple message
-    if (portfolio.positions.length === 0) {
-        const embed = new EmbedBuilder()
-            .setTitle(`${targetUsername}'s Stock Portfolio`)
-            .setColor('#0099ff')
-            .setDescription('Your stock portfolio is currently empty. Use the `/buy` command to purchase stocks.')
-            .addFields({ 
-                name: 'Cash Balance', 
-                value: formatCurrency(portfolio.cashBalance), 
-                inline: false 
-            })
-            .setTimestamp();
-        
-        await interaction.editReply({ embeds: [embed], components: [] });
-        return;
-    }
-    
-    // Set up state for pagination and sorting
-    let currentPage = 0;
-    let currentSortIndex = 0; // Start with alphabetical sorting
-    let sortedPositions = [...portfolio.positions]; // Create a copy we can sort
-    
-    // Initial sort - alphabetical by symbol
-    sortPositions(sortedPositions, SORT_CYCLE[currentSortIndex]);
-    
-    // For portfolios with positions, paginate the results
-    const totalPages = Math.ceil(portfolio.positions.length / POSITIONS_PER_PAGE);
-    
-    // Function to generate embed for a specific page
-    const generateEmbed = (page: number, positions: any[], sortType: SortType) => {
-        const startIndex = page * POSITIONS_PER_PAGE;
-        const endIndex = Math.min(startIndex + POSITIONS_PER_PAGE, positions.length);
-        const currentPositions = positions.slice(startIndex, endIndex);
-        
-        const embed = new EmbedBuilder()
-            .setTitle(`${targetUsername}'s Stock Portfolio (Page ${page + 1}/${totalPages})`)
-            .setColor('#0099ff')
-            .addFields([
-                { 
-                    name: 'Cash Balance', 
-                    value: formatCurrency(portfolio.cashBalance), 
-                    inline: false 
-                },
-                { 
-                    name: 'Total Stock Value', 
-                    value: formatCurrency(portfolio.totalValue), 
-                    inline: false 
-                }
-            ])
-            .setFooter({ 
-                text: `Sorting: ${sortType} | Last updated: ${formatTimestamp(new Date())}` 
-            })
-            .setTimestamp();
-        
-        // Add each position as a separate field instead of using description
-        currentPositions.forEach((pos: any) => {
-            const profitLossSymbol = pos.profitLoss >= 0 ? '📈' : '📉';
-            const positionDetails = [
-                `Quantity: ${pos.quantity} shares`,
-                `Current Price: ${formatCurrency(pos.currentPrice)}`,
-                `Market Value: ${formatCurrency(pos.marketValue)}`,
-                `Avg Purchase: ${formatCurrency(pos.averagePurchasePrice)}`,
-                `P/L: ${profitLossSymbol} ${formatCurrency(pos.profitLoss)} (${pos.percentChange.toFixed(2)}%)`
-            ].join('\n');
-            
-            embed.addFields({
-                name: `${pos.symbol}`,
-                value: positionDetails,
-                inline: false
-            });
-        });
-        
-        return embed;
-    };
-    
-    // Create buttons for navigation and sorting
-    const createButtons = (currentPage: number, includeBackButton: boolean) => {
-        const row = new ActionRowBuilder<ButtonBuilder>();
-        
-        if (includeBackButton) {
-            row.addComponents(
-                new ButtonBuilder()
-                    .setCustomId('back_to_summary')
-                    .setLabel('Back to Summary')
-                    .setStyle(ButtonStyle.Secondary)
-            );
-        }
-        
-        // Only add navigation buttons if there are multiple pages
-        if (totalPages > 1) {
-            row.addComponents(
-                new ButtonBuilder()
-                    .setCustomId('previous')
-                    .setLabel('Previous')
-                    .setStyle(ButtonStyle.Primary)
-                    .setDisabled(currentPage === 0),
-                new ButtonBuilder()
-                    .setCustomId('next')
-                    .setLabel('Next')
-                    .setStyle(ButtonStyle.Primary)
-                    .setDisabled(currentPage === totalPages - 1)
-            );
-        }
-        
-        row.addComponents(
-            new ButtonBuilder()
-                .setCustomId('sort')
-                .setLabel('Sort')
-                .setStyle(ButtonStyle.Success)
-        );
-        
-        return row;
-    };
-    
-    // Send initial reply with the first page
-    const message = await interaction.editReply({
-        embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
-        components: [createButtons(currentPage, true)]
-    });
-    
-    // Create a collector for button interactions
-    const collector = message.createMessageComponentCollector({
-        time: 5 * 60 * 1000 // 5 minutes timeout
-    });
-    
-    collector.on('collect', async (i) => {
-        if (i.user.id !== interaction.user.id) {
-            await i.reply({ content: 'These buttons are not for you!', ephemeral: true });
-            return;
-        }
-        
-        // Handle button clicks
-        if (i.customId === 'previous') {
-            currentPage = Math.max(0, currentPage - 1);
-            await i.update({
-                embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
-                components: [createButtons(currentPage, true)]
-            });
-        } else if (i.customId === 'next') {
-            currentPage = Math.min(totalPages - 1, currentPage + 1);
-            await i.update({
-                embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
-                components: [createButtons(currentPage, true)]
-            });
-        } else if (i.customId === 'sort') {
-            // Update the sort index, cycling through options
-            currentSortIndex = (currentSortIndex + 1) % SORT_CYCLE.length;
-            sortPositions(sortedPositions, SORT_CYCLE[currentSortIndex]);
-            await i.update({
-                embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
-                components: [createButtons(currentPage, true)]
-            });
-        } else if (i.customId === 'back_to_summary') {
-            // Fix for the race condition - use deferUpdate and fetch data before update
-            await i.deferUpdate();
-            
-            // Fetch all data needed for summary view
-            const totalPortfolioValue = await cryptoTradingService.getTotalPortfolioValue(targetUserId);
-            const cryptoPortfolio = await cryptoTradingService.getCryptoPortfolio(targetUserId);
-            
-            // Create a portfolio summary object
-            const portfolioSummary = {
-                cashBalance: portfolio.cashBalance,
-                totalStockValue: portfolio.totalValue - portfolio.cashBalance,
-                totalCryptoValue: cryptoPortfolio.reduce((sum: number, pos: any) => sum + (pos.currentValue || 0), 0),
-                totalOptionsValue: (await optionsService.getOptionsPortfolio(targetUserId)).totalValue,
-                totalPortfolioValue: totalPortfolioValue
-            };
-            
-            // Generate summary embed and components
-            const hasStocks = portfolio.positions && portfolio.positions.length > 0;
-            const hasCrypto = cryptoPortfolio && cryptoPortfolio.length > 0;
-            const embed = generateSummaryEmbed(interaction, portfolio, cryptoPortfolio, portfolioSummary, hasStocks, hasCrypto, targetUsername);
-            const components = generateSummaryButtons(hasStocks, hasCrypto);
-            
-            // Update the message in a single call
-            await interaction.editReply({
-                embeds: [embed],
-                components: components
-            });
-            
-            // We're manually handling this case, so return early
-            return;
-        }
-    });
-    
-    collector.on('end', async (collected, reason) => {
-        if (reason !== 'messageDelete') {
-            // Remove buttons after timeout
-            try {
-                await interaction.editReply({
-                    embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
-                    components: []
-                });
-            } catch (error) {
-                console.error('Error removing buttons after timeout:', error);
-            }
-        }
-    });
-}
-
-/**
- * Generate a summary embed for portfolio summary view
- */
-function generateSummaryEmbed(
-    interaction: ChatInputCommandInteraction, 
-    stockPortfolio: any, 
-    cryptoPortfolio: any, 
-    totalValue: any,
-    hasStocks: boolean,
-    hasCrypto: boolean,
-    targetUsername: string
-) {
-    const embed = new EmbedBuilder()
-        .setTitle(`${targetUsername}'s Portfolio Summary`)
-        .setColor('#0099ff')
-        .addFields([
-            { 
-                name: 'Cash Balance', 
-                value: formatCurrency(totalValue.cashBalance || 0), 
-                inline: true
-            },
-            { 
-                name: 'Total Stock Value', 
-                value: formatCurrency(totalValue.totalStockValue || 0), 
-                inline: true
-            },
-            { 
-                name: 'Total Crypto Value', 
-                value: formatCurrency(totalValue.totalCryptoValue || 0), 
-                inline: true
-            },
-            { 
-                name: 'Total Options Value', 
-                value: formatCurrency(totalValue.totalOptionsValue || 0), 
-                inline: true
-            },
-            { 
-                name: 'Total Portfolio Value', 
-                value: formatCurrency(totalValue.totalPortfolioValue || 0), 
-                inline: false
-            }
-        ])
-        .setTimestamp();
-    
-    // Add top positions from each category
-    if (hasStocks) {
-        // Sort stock positions by market value and get top 3
-        const topStocks = [...stockPortfolio.positions]
-            .sort((a, b) => b.marketValue - a.marketValue)
-            .slice(0, 3);
-        
-        let stocksText = '';
-        topStocks.forEach((pos: any) => {
-            const profitLossSymbol = pos.profitLoss >= 0 ? '📈' : '📉';
-            stocksText += `${pos.symbol} (${pos.quantity} shares): ${formatCurrency(pos.marketValue)} ${profitLossSymbol} ${pos.percentChange.toFixed(2)}%\n`;
-        });
-        
-        if (stockPortfolio.positions.length > 3) {
-            stocksText += `...and ${stockPortfolio.positions.length - 3} more stocks`;
-        }
-        
-        embed.addFields({
-            name: `Top Stocks (${stockPortfolio.positions.length} total)`,
-            value: stocksText || 'None',
-            inline: false
-        });
-    }
-    
-    if (hasCrypto) {
-        // Handle both formats: direct array or {positions: array}
-        const cryptoPositions = Array.isArray(cryptoPortfolio) ? cryptoPortfolio : (cryptoPortfolio.positions || []);
-        const positionCount = cryptoPositions.length;
-        
-        // Sort crypto positions by market value and get top 3
-        const topCrypto = [...cryptoPositions]
-            .sort((a, b) => ((b.currentValue || b.marketValue || 0) - (a.currentValue || a.marketValue || 0)))
-            .slice(0, 3);
-        
-        let cryptoText = '';
-        topCrypto.forEach((pos: any) => {
-            // Use various fallbacks to handle different property names
-            const value = pos.currentValue || pos.marketValue || 0;
-            const percentChange = pos.profitLossPercent || pos.profitLossPercentage || 0;
-            const profitLossSymbol = percentChange >= 0 ? '📈' : '📉';
-            cryptoText += `${pos.symbol}: ${formatCurrency(value)} ${profitLossSymbol} ${percentChange.toFixed(2)}%\n`;
-        });
-        
-        if (positionCount > 3) {
-            cryptoText += `...and ${positionCount - 3} more cryptocurrencies`;
-        }
-        
-        embed.addFields({
-            name: `Top Cryptocurrencies (${positionCount} total)`,
-            value: cryptoText || 'None',
-            inline: false
-        });
-    }
-    
-    return embed;
-}
-
-/**
  * Generate buttons for summary view
  */
-function generateSummaryButtons(hasStocks: boolean, hasCrypto: boolean) {
+function generateSummaryButtons(hasStocks: boolean, hasCrypto: boolean, hasOptions: boolean) {
     const row = new ActionRowBuilder<ButtonBuilder>()
         .addComponents(
             new ButtonBuilder()
@@ -648,103 +403,115 @@ function generateSummaryButtons(hasStocks: boolean, hasCrypto: boolean) {
                 .setCustomId('view_crypto')
                 .setLabel('View Crypto')
                 .setStyle(ButtonStyle.Primary)
-                .setDisabled(!hasCrypto)
+                .setDisabled(!hasCrypto),
+            new ButtonBuilder()
+                .setCustomId('view_options')
+                .setLabel('View Options')
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(!hasOptions)
         );
     
     return [row];
 }
 
 /**
- * Show the crypto view of the portfolio (cryptocurrencies only)
+ * Show the options view of the portfolio (options only)
  */
-async function showCryptoView(interaction: ChatInputCommandInteraction, portfolio: any, cashBalance: number, targetUsername: string, targetUserId: string) {
-    // If portfolio is empty, show simple message
-    if (portfolio.positions.length === 0) {
+async function showOptionsView(interaction: ChatInputCommandInteraction, optionsPortfolio: any, targetUsername: string, targetUserId: string) {
+    const marginStatus = await optionsService.calculateMarginStatus(targetUserId);
+    if (!optionsPortfolio.positions || optionsPortfolio.positions.length === 0) {
         const embed = new EmbedBuilder()
-            .setTitle(`${targetUsername}'s Crypto Portfolio`)
-            .setColor('#f7931a') // Bitcoin gold color
-            .setDescription('Your cryptocurrency portfolio is currently empty. Use the `/crypto_buy` command to purchase cryptocurrencies.')
-            .addFields({ 
-                name: 'Cash Balance', 
-                value: formatCurrency(cashBalance), 
-                inline: false 
-            })
+            .setTitle(`${targetUsername}'s Options Portfolio`)
+            .setColor('#0099ff')
+            .setDescription('Your options portfolio is empty. Use `/trade_option` to start trading options.')
+            .addFields([
+                {
+                    name: 'Margin Status',
+                    value: `Available: ${formatCurrency(marginStatus.availableMargin)}\nUsed: ${formatCurrency(marginStatus.marginUsed)} (${marginStatus.utilizationPercentage.toFixed(2)}%)\nPortfolio Value: ${formatCurrency(marginStatus.portfolioValue)}`,
+                    inline: false
+                }
+            ])
             .setTimestamp();
-        
         await interaction.editReply({ embeds: [embed], components: [] });
         return;
     }
-    
-    // Set up state for pagination and sorting
     let currentPage = 0;
-    let currentSortIndex = 0; // Start with alphabetical sorting
-    let sortedPositions = [...portfolio.positions]; // Create a copy we can sort
-    
-    // Initial sort - alphabetical by symbol
-    sortPositions(sortedPositions, SORT_CYCLE[currentSortIndex]);
-    
-    // For portfolios with positions, paginate the results
-    const totalPages = Math.ceil(portfolio.positions.length / POSITIONS_PER_PAGE);
-    
-    // Function to generate embed for a specific page
-    const generateEmbed = (page: number, positions: any[], sortType: SortType) => {
-        const startIndex = page * POSITIONS_PER_PAGE;
-        const endIndex = Math.min(startIndex + POSITIONS_PER_PAGE, positions.length);
+    let currentSortIndex = 0;
+    let sortedPositions = [...optionsPortfolio.positions];
+    sortOptionPositions(sortedPositions, OPTION_SORT_CYCLE[currentSortIndex]);
+    const totalPages = Math.ceil(sortedPositions.length / OPTIONS_POSITIONS_PER_PAGE);
+    function sortOptionPositions(positions: any[], sortType: OptionSortType) {
+        switch (sortType) {
+            case OptionSortType.EXPIRATION_ASC:
+                positions.sort((a, b) => new Date(a.expirationDate).getTime() - new Date(b.expirationDate).getTime());
+                break;
+            case OptionSortType.EXPIRATION_DESC:
+                positions.sort((a, b) => new Date(b.expirationDate).getTime() - new Date(a.expirationDate).getTime());
+                break;
+            case OptionSortType.PROFIT_LOSS_HIGH:
+                positions.sort((a, b) => (b.profitLoss || 0) - (a.profitLoss || 0));
+                break;
+            case OptionSortType.PROFIT_LOSS_LOW:
+                positions.sort((a, b) => (a.profitLoss || 0) - (b.profitLoss || 0));
+                break;
+            case OptionSortType.SYMBOL_ASC:
+                positions.sort((a, b) => a.symbol.localeCompare(b.symbol));
+                break;
+            case OptionSortType.MARGIN_HIGH:
+                positions.sort((a, b) => (b.marginRequired || 0) - (a.marginRequired || 0));
+                break;
+        }
+        return positions;
+    }
+    const generateEmbed = (page: number, positions: any[], sortType: OptionSortType) => {
+        const startIndex = page * OPTIONS_POSITIONS_PER_PAGE;
+        const endIndex = Math.min(startIndex + OPTIONS_POSITIONS_PER_PAGE, positions.length);
         const currentPositions = positions.slice(startIndex, endIndex);
-        
         const embed = new EmbedBuilder()
-            .setTitle(`${targetUsername}'s Crypto Portfolio (Page ${page + 1}/${totalPages})`)
-            .setColor('#f7931a') // Bitcoin gold color
+            .setTitle(`${targetUsername}'s Options Portfolio (Page ${page + 1}/${totalPages})`)
+            .setColor('#0099ff')
             .addFields([
-                { 
-                    name: 'Cash Balance', 
-                    value: formatCurrency(cashBalance), 
-                    inline: false 
-                },
-                { 
-                    name: 'Total Crypto Value', 
-                    value: formatCurrency(portfolio.totalValue), 
-                    inline: false 
+                {
+                    name: 'Margin Status',
+                    value: `Available: ${formatCurrency(marginStatus.availableMargin)}\nUsed: ${formatCurrency(marginStatus.marginUsed)} (${marginStatus.utilizationPercentage.toFixed(2)}%)`,
+                    inline: false
                 }
             ])
-            .setFooter({ 
-                text: `Sorting: ${sortType} | Last updated: ${formatTimestamp(new Date())}` 
+            .setFooter({
+                text: `Sorting: ${sortType} | Last updated: ${formatTimestamp(new Date())}`
             })
             .setTimestamp();
-        
-        // Add each position as a separate field
         currentPositions.forEach((pos: any) => {
             const profitLossSymbol = (pos.profitLoss || 0) >= 0 ? '📈' : '📉';
-            // Ensure values are numbers and not NaN
-            const quantity = isNaN(pos.quantity) ? 0 : pos.quantity;
-            const currentPrice = isNaN(pos.currentPrice) ? 0 : (pos.currentPrice || 0);
-            const marketValue = isNaN(pos.marketValue) ? (isNaN(pos.currentValue) ? 0 : pos.currentValue) : pos.marketValue;
-            const avgPurchasePrice = isNaN(pos.averagePurchasePrice) ? 0 : pos.averagePurchasePrice;
-            const profitLoss = isNaN(pos.profitLoss) ? 0 : (pos.profitLoss || 0);
-            const profitLossPercentage = isNaN(pos.profitLossPercentage) ? 0 : (pos.profitLossPercentage || 0);
-            
+            const contractType = pos.position === 'long' ? `Long ${pos.quantity} ${pos.optionType}${pos.quantity > 1 ? 's' : ''}` : `Short ${pos.quantity} ${pos.optionType}${pos.quantity > 1 ? 's' : ''}`;
+            const optionSymbol = optionsService.formatOptionSymbol(
+                pos.symbol,
+                pos.expirationDate,
+                pos.optionType,
+                pos.strikePrice
+            );
             const positionDetails = [
-                `Quantity: ${formatCryptoAmount(quantity)}`, // Higher precision for crypto amounts
-                `Current Price: ${formatCryptoPrice(currentPrice)}`, // Adaptive precision for prices
-                `Market Value: ${formatCurrency(marketValue)}`,
-                `Avg Purchase: ${formatCryptoPrice(avgPurchasePrice)}`, // Adaptive precision for prices
-                `P/L: ${profitLossSymbol} ${formatCurrency(profitLoss)} (${profitLossPercentage.toFixed(2)}%)`
-            ].join('\n');
-            
+                `**${optionSymbol}**`,
+                `Strike: ${formatCurrency(pos.strikePrice)}`,
+                `Expiration: ${pos.formattedExpiration || new Date(pos.expirationDate).toLocaleDateString()}`,
+                `Time to Expiry: ${Math.round(pos.timeToExpiry || 0)} days`,
+                `Moneyness: ${pos.moneyness}`,
+                `Price when Opened: ${formatCurrency((pos.purchasePrice || 0) * 100)} per contract`,
+                `Current Price: ${formatCurrency((pos.currentPrice || 0) * 100)} per contract`,
+                `Market Value: ${formatCurrency(pos.marketValue || 0)}`,
+                pos.marginRequired ? `Margin Required: ${formatCurrency(pos.marginRequired)}` : '',
+                `P/L: ${profitLossSymbol} ${formatCurrency(pos.profitLoss || 0)} (${(pos.percentChange || 0).toFixed(2)}%)`
+            ].filter(line => line).join('\n');
             embed.addFields({
-                name: `${pos.name} (${pos.symbol.toUpperCase()})`,
+                name: `${pos.symbol} ${pos.optionType.toUpperCase()} $${pos.strikePrice} - ${contractType}`,
                 value: positionDetails,
                 inline: false
             });
         });
-        
         return embed;
     };
-    
-    // Create buttons for navigation and sorting
-    const createButtons = (currentPage: number, includeBackButton: boolean) => {
+    const createButtons = (currentPage: number, includeBackButton = true) => {
         const row = new ActionRowBuilder<ButtonBuilder>();
-        
         if (includeBackButton) {
             row.addComponents(
                 new ButtonBuilder()
@@ -753,8 +520,6 @@ async function showCryptoView(interaction: ChatInputCommandInteraction, portfoli
                     .setStyle(ButtonStyle.Secondary)
             );
         }
-        
-        // Only add navigation buttons if there are multiple pages
         if (totalPages > 1) {
             row.addComponents(
                 new ButtonBuilder()
@@ -769,100 +534,124 @@ async function showCryptoView(interaction: ChatInputCommandInteraction, portfoli
                     .setDisabled(currentPage === totalPages - 1)
             );
         }
-        
         row.addComponents(
             new ButtonBuilder()
                 .setCustomId('sort')
                 .setLabel('Sort')
                 .setStyle(ButtonStyle.Success)
         );
-        
-        return row;
+        // Close position buttons for each position on the page
+        const closeRows: ActionRowBuilder<ButtonBuilder>[] = [];
+        const startIndex = currentPage * OPTIONS_POSITIONS_PER_PAGE;
+        const endIndex = Math.min(startIndex + OPTIONS_POSITIONS_PER_PAGE, sortedPositions.length);
+        const currentPositions = sortedPositions.slice(startIndex, endIndex);
+        for (let i = 0; i < currentPositions.length; i++) {
+            const position = currentPositions[i];
+            const closeRow = new ActionRowBuilder<ButtonBuilder>()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`close_${position.id}`)
+                        .setLabel(`Close ${position.symbol} ${position.optionType.toUpperCase()}`)
+                        .setStyle(ButtonStyle.Danger)
+                );
+            closeRows.push(closeRow);
+        }
+        return [row, ...closeRows];
     };
-    
-    // Send initial reply with the first page
     const message = await interaction.editReply({
-        embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
-        components: [createButtons(currentPage, true)]
+        embeds: [generateEmbed(currentPage, sortedPositions, OPTION_SORT_CYCLE[currentSortIndex])],
+        components: createButtons(currentPage)
     });
-    
-    // Create a collector for button interactions
-    const collector = message.createMessageComponentCollector({
-        time: 5 * 60 * 1000 // 5 minutes timeout
+    let collector = message.createMessageComponentCollector({
+        time: 10 * 60 * 1000
     });
-    
     collector.on('collect', async (i) => {
         if (i.user.id !== interaction.user.id) {
             await i.reply({ content: 'These buttons are not for you!', ephemeral: true });
             return;
         }
-        
-        // Handle button clicks
-        if (i.customId === 'previous') {
+        const customId = i.customId;
+        if (customId === 'previous') {
             currentPage = Math.max(0, currentPage - 1);
-            await i.update({
-                embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
-                components: [createButtons(currentPage, true)]
-            });
-        } else if (i.customId === 'next') {
+        } else if (customId === 'next') {
             currentPage = Math.min(totalPages - 1, currentPage + 1);
-            await i.update({
-                embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
-                components: [createButtons(currentPage, true)]
-            });
-        } else if (i.customId === 'sort') {
-            // Update the sort index, cycling through options
-            currentSortIndex = (currentSortIndex + 1) % SORT_CYCLE.length;
-            sortPositions(sortedPositions, SORT_CYCLE[currentSortIndex]);
-            await i.update({
-                embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
-                components: [createButtons(currentPage, true)]
-            });
-        } else if (i.customId === 'back_to_summary') {
-            // Fix for the race condition - use deferUpdate and fetch data before update
+        } else if (customId === 'sort') {
+            currentSortIndex = (currentSortIndex + 1) % OPTION_SORT_CYCLE.length;
+            sortOptionPositions(sortedPositions, OPTION_SORT_CYCLE[currentSortIndex]);
+        } else if (customId.startsWith('close_')) {
+            const positionId = parseInt(customId.split('_')[1]);
             await i.deferUpdate();
-            
+            try {
+                const closeResult = await optionsService.closePosition(targetUserId, positionId);
+                if (closeResult.success) {
+                    await i.followUp({ content: `✅ ${closeResult.message}`, ephemeral: true });
+                    const updatedPortfolio = await optionsService.getOptionsPortfolio(targetUserId);
+                    const updatedMarginStatus = await optionsService.calculateMarginStatus(targetUserId);
+                    sortedPositions = [...updatedPortfolio.positions];
+                    sortOptionPositions(sortedPositions, OPTION_SORT_CYCLE[currentSortIndex]);
+                    const newTotalPages = Math.ceil(sortedPositions.length / OPTIONS_POSITIONS_PER_PAGE);
+                    if (currentPage >= newTotalPages && newTotalPages > 0) {
+                        currentPage = newTotalPages - 1;
+                    }
+                    if (sortedPositions.length === 0) {
+                        const emptyEmbed = new EmbedBuilder()
+                            .setTitle(`${targetUsername}'s Options Portfolio`)
+                            .setColor('#0099ff')
+                            .setDescription('Your options portfolio is now empty.')
+                            .addFields([
+                                {
+                                    name: 'Margin Status',
+                                    value: `Available: ${formatCurrency(updatedMarginStatus.availableMargin)}\nUsed: ${formatCurrency(updatedMarginStatus.marginUsed)} (${updatedMarginStatus.utilizationPercentage.toFixed(2)}%)`,
+                                    inline: false
+                                }
+                            ])
+                            .setTimestamp();
+                        await interaction.editReply({ embeds: [emptyEmbed], components: [] });
+                        collector.stop();
+                        return;
+                    }
+                } else {
+                    await i.followUp({ content: `❌ ${closeResult.message}`, ephemeral: true });
+                }
+            } catch (error) {
+                await i.followUp({ content: `An error occurred while closing the position.`, ephemeral: true });
+            }
+        } else if (customId === 'back_to_summary') {
+            await i.deferUpdate();
             // Fetch all data needed for summary view
-            const totalPortfolioValue = await cryptoTradingService.getTotalPortfolioValue(targetUserId);
             const stockPortfolio = await tradingService.getPortfolio(targetUserId);
-            
-            // Create a portfolio summary object
+            const cryptoPortfolio = await cryptoTradingService.getCryptoPortfolio(targetUserId);
+            const formattedCryptoPortfolio = { positions: cryptoPortfolio || [], totalValue: 0 };
+            if (cryptoPortfolio && cryptoPortfolio.length > 0) {
+                formattedCryptoPortfolio.totalValue = cryptoPortfolio.reduce((sum, pos) => sum + (pos.currentValue || 0), 0);
+            }
+            const optionsPortfolio = await optionsService.getOptionsPortfolio(targetUserId);
+            const cashBalance = userDb.getCashBalance(targetUserId);
             const portfolioSummary = {
                 cashBalance: cashBalance,
                 totalStockValue: stockPortfolio.positions.length > 0 ? stockPortfolio.totalValue - cashBalance : 0,
-                totalCryptoValue: portfolio.totalValue,
-                totalOptionsValue: (await optionsService.getOptionsPortfolio(targetUserId)).totalValue,
-                totalPortfolioValue: totalPortfolioValue
+                totalCryptoValue: formattedCryptoPortfolio.totalValue,
+                totalOptionsValue: optionsPortfolio.totalValue,
+                totalPortfolioValue: cashBalance + (stockPortfolio.positions.length > 0 ? stockPortfolio.totalValue - cashBalance : 0) + formattedCryptoPortfolio.totalValue + optionsPortfolio.totalValue
             };
-            
-            // Generate summary embed and components
-            const hasStocks = stockPortfolio.positions && stockPortfolio.positions.length > 0;
-            const hasCrypto = portfolio.positions && portfolio.positions.length > 0;
-            const embed = generateSummaryEmbed(interaction, stockPortfolio, portfolio.positions, portfolioSummary, hasStocks, hasCrypto, targetUsername);
-            const components = generateSummaryButtons(hasStocks, hasCrypto);
-            
-            // Update the message in a single call
-            await interaction.editReply({
-                embeds: [embed],
-                components: components
-            });
-            
-            // We're manually handling this case, so return early
+            await showSummaryView(interaction, stockPortfolio, formattedCryptoPortfolio, portfolioSummary, targetUsername, targetUserId, optionsPortfolio);
             return;
         }
+        await i.update({
+            embeds: [generateEmbed(currentPage, sortedPositions, OPTION_SORT_CYCLE[currentSortIndex])],
+            components: createButtons(currentPage)
+        });
     });
-    
-    collector.on('end', async (collected, reason) => {
-        if (reason !== 'messageDelete') {
-            // Remove buttons after timeout
-            try {
+    collector.on('end', async () => {
+        try {
+            if (sortedPositions.length > 0) {
                 await interaction.editReply({
-                    embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
+                    embeds: [generateEmbed(currentPage, sortedPositions, OPTION_SORT_CYCLE[currentSortIndex])],
                     components: []
                 });
-            } catch (error) {
-                console.error('Error removing buttons after timeout:', error);
             }
+        } catch (error) {
+            // ignore
         }
     });
 }
@@ -898,4 +687,266 @@ function sortPositions(positions: any[], sortType: SortType) {
             break;
     }
     return positions;
+}
+
+// --- STOCKS VIEW ---
+async function showStocksView(interaction: ChatInputCommandInteraction, portfolio: any, targetUsername: string, targetUserId: string) {
+    if (!portfolio.positions || portfolio.positions.length === 0) {
+        const embed = new EmbedBuilder()
+            .setTitle(`${targetUsername}'s Stocks Portfolio`)
+            .setColor('#0099ff')
+            .setDescription('Your stocks portfolio is empty. Use `/buy` to purchase stocks.')
+            .setTimestamp();
+        await interaction.editReply({ embeds: [embed] });
+        return;
+    }
+    let currentPage = 0;
+    let currentSortIndex = 0;
+    let sortedPositions = [...portfolio.positions];
+    sortPositions(sortedPositions, SORT_CYCLE[currentSortIndex]);
+    const totalPages = Math.ceil(sortedPositions.length / POSITIONS_PER_PAGE);
+    const generateEmbed = (page: number, positions: any[], sortType: SortType) => {
+        const startIndex = page * POSITIONS_PER_PAGE;
+        const endIndex = Math.min(startIndex + POSITIONS_PER_PAGE, positions.length);
+        const currentPositions = positions.slice(startIndex, endIndex);
+        const embed = new EmbedBuilder()
+            .setTitle(`${targetUsername}'s Stocks Portfolio (Page ${page + 1}/${totalPages})`)
+            .setColor('#0099ff')
+            .setFooter({
+                text: `Sorting: ${sortType} | Last updated: ${formatTimestamp(new Date())}`
+            })
+            .setTimestamp();
+        currentPositions.forEach((pos: any) => {
+            const profitLossSymbol = (pos.profitLoss || 0) >= 0 ? '📈' : '📉';
+            embed.addFields({
+                name: `${pos.symbol}: ${formatCurrency(pos.marketValue || 0)} ${profitLossSymbol} ${formatNumber(pos.percentChange || 0)}%`,
+                value: [
+                    `Quantity: ${formatNumber(pos.quantity || 0)}`,
+                    `Average Buy Price: ${formatCurrency(pos.averageBuyPrice || 0)}`,
+                    `Current Price: ${formatCurrency(pos.currentPrice || 0)}`,
+                    `P/L: ${profitLossSymbol} ${formatCurrency(pos.profitLoss || 0)} (${formatNumber(pos.profitLossPercentage || 0)}%)`
+                ].join('\n'),
+                inline: false
+            });
+        });
+        return embed;
+    };
+    const createButtons = (currentPage: number, includeBackButton = true) => {
+        const row = new ActionRowBuilder<ButtonBuilder>();
+        if (includeBackButton) {
+            row.addComponents(
+                new ButtonBuilder()
+                    .setCustomId('back_to_summary')
+                    .setLabel('Back to Summary')
+                    .setStyle(ButtonStyle.Secondary)
+            );
+        }
+        if (totalPages > 1) {
+            row.addComponents(
+                new ButtonBuilder()
+                    .setCustomId('previous')
+                    .setLabel('Previous')
+                    .setStyle(ButtonStyle.Primary)
+                    .setDisabled(currentPage === 0),
+                new ButtonBuilder()
+                    .setCustomId('next')
+                    .setLabel('Next')
+                    .setStyle(ButtonStyle.Primary)
+                    .setDisabled(currentPage === totalPages - 1)
+            );
+        }
+        row.addComponents(
+            new ButtonBuilder()
+                .setCustomId('sort')
+                .setLabel('Sort')
+                .setStyle(ButtonStyle.Success)
+        );
+        return [row];
+    };
+    const message = await interaction.editReply({
+        embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
+        components: createButtons(currentPage)
+    });
+    const collector = message.createMessageComponentCollector({
+        time: 10 * 60 * 1000
+    });
+    collector.on('collect', async (i) => {
+        if (i.user.id !== interaction.user.id) {
+            await i.reply({ content: 'These buttons are not for you!', ephemeral: true });
+            return;
+        }
+        const customId = i.customId;
+        if (customId === 'previous') {
+            currentPage = Math.max(0, currentPage - 1);
+        } else if (customId === 'next') {
+            currentPage = Math.min(totalPages - 1, currentPage + 1);
+        } else if (customId === 'sort') {
+            currentSortIndex = (currentSortIndex + 1) % SORT_CYCLE.length;
+            sortPositions(sortedPositions, SORT_CYCLE[currentSortIndex]);
+        } else if (customId === 'back_to_summary') {
+            await i.deferUpdate();
+            // Fetch all data needed for summary view
+            const stockPortfolio = await tradingService.getPortfolio(targetUserId);
+            const cryptoPortfolio = await cryptoTradingService.getCryptoPortfolio(targetUserId);
+            const formattedCryptoPortfolio = { positions: cryptoPortfolio || [], totalValue: 0 };
+            if (cryptoPortfolio && cryptoPortfolio.length > 0) {
+                formattedCryptoPortfolio.totalValue = cryptoPortfolio.reduce((sum, pos) => sum + (pos.currentValue || 0), 0);
+            }
+            const optionsPortfolio = await optionsService.getOptionsPortfolio(targetUserId);
+            const cashBalance = userDb.getCashBalance(targetUserId);
+            const portfolioSummary = {
+                cashBalance: cashBalance,
+                totalStockValue: stockPortfolio.positions.length > 0 ? stockPortfolio.totalValue - cashBalance : 0,
+                totalCryptoValue: formattedCryptoPortfolio.totalValue,
+                totalOptionsValue: optionsPortfolio.totalValue,
+                totalPortfolioValue: cashBalance + (stockPortfolio.positions.length > 0 ? stockPortfolio.totalValue - cashBalance : 0) + formattedCryptoPortfolio.totalValue + optionsPortfolio.totalValue
+            };
+            await showSummaryView(interaction, stockPortfolio, formattedCryptoPortfolio, portfolioSummary, targetUsername, targetUserId, optionsPortfolio);
+            return;
+        }
+        await i.update({
+            embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
+            components: createButtons(currentPage)
+        });
+    });
+    collector.on('end', async () => {
+        try {
+            if (sortedPositions.length > 0) {
+                await interaction.editReply({
+                    embeds: [generateEmbed(currentPage, sortedPositions, SORT_CYCLE[currentSortIndex])],
+                    components: []
+                });
+            }
+        } catch (error) {
+            // ignore
+        }
+    });
+}
+
+// --- CRYPTO VIEW ---
+async function showCryptoView(interaction: ChatInputCommandInteraction, portfolio: any, cashBalance: number, targetUsername: string, targetUserId: string) {
+    if (!portfolio.positions || portfolio.positions.length === 0) {
+        const embed = new EmbedBuilder()
+            .setTitle(`${targetUsername}'s Crypto Portfolio`)
+            .setColor('#0099ff')
+            .setDescription('Your crypto portfolio is empty. Use `/crypto_buy` to purchase cryptocurrencies.')
+            .setTimestamp();
+        await interaction.editReply({ embeds: [embed] });
+        return;
+    }
+    let currentPage = 0;
+    let sortedPositions = [...portfolio.positions];
+    sortCryptoPositions(sortedPositions);
+    const totalPages = Math.ceil(sortedPositions.length / POSITIONS_PER_PAGE);
+    function sortCryptoPositions(positions: any[]) {
+        positions.sort((a, b) => (b.currentValue || 0) - (a.currentValue || 0));
+    }
+    const generateEmbed = (page: number, positions: any[]) => {
+        const startIndex = page * POSITIONS_PER_PAGE;
+        const endIndex = Math.min(startIndex + POSITIONS_PER_PAGE, positions.length);
+        const currentPositions = positions.slice(startIndex, endIndex);
+        const embed = new EmbedBuilder()
+            .setTitle(`${targetUsername}'s Crypto Portfolio (Page ${page + 1}/${totalPages})`)
+            .setColor('#0099ff')
+            .setFooter({
+                text: `Last updated: ${formatTimestamp(new Date())}`
+            })
+            .setTimestamp();
+        currentPositions.forEach((pos: any) => {
+            const profitLossSymbol = (pos.profitLossPercent || 0) >= 0 ? '📈' : '📉';
+            // Use the symbol as the link text in the value, and keep the name as the coin name only
+            const coinLink = pos.coinId ? `[${pos.symbol}](https://www.coingecko.com/en/coins/${pos.coinId})` : pos.symbol;
+            embed.addFields({
+                name: `${pos.name}: ${formatCurrency(pos.currentValue || 0)} ${profitLossSymbol} ${(pos.profitLossPercent || 0).toFixed(2)}%`,
+                value: [
+                    `${coinLink}`,
+                    `Quantity: ${formatNumber(pos.quantity || 0)}`,
+                    `Average Buy Price: ${formatCurrency(pos.averageBuyPrice || 0)}`,
+                    `Current Price: ${formatCurrency(pos.currentPrice || 0)}`,
+                    `P/L: ${profitLossSymbol} ${formatCurrency(pos.profitLoss || 0)} (${(pos.profitLossPercent || 0).toFixed(2)}%)`
+                ].join('\n'),
+                inline: false
+            });
+        });
+        return embed;
+    };
+    const createButtons = (currentPage: number) => {
+        const row = new ActionRowBuilder<ButtonBuilder>();
+        if (totalPages > 1) {
+            row.addComponents(
+                new ButtonBuilder()
+                    .setCustomId('previous')
+                    .setLabel('Previous')
+                    .setStyle(ButtonStyle.Primary)
+                    .setDisabled(currentPage === 0),
+                new ButtonBuilder()
+                    .setCustomId('next')
+                    .setLabel('Next')
+                    .setStyle(ButtonStyle.Primary)
+                    .setDisabled(currentPage === totalPages - 1)
+            );
+        }
+        row.addComponents(
+            new ButtonBuilder()
+                .setCustomId('back_to_summary')
+                .setLabel('Back to Summary')
+                .setStyle(ButtonStyle.Secondary)
+        );
+        return [row];
+    };
+    const message = await interaction.editReply({
+        embeds: [generateEmbed(currentPage, sortedPositions)],
+        components: createButtons(currentPage)
+    });
+    const collector = message.createMessageComponentCollector({
+        time: 10 * 60 * 1000
+    });
+    collector.on('collect', async (i) => {
+        if (i.user.id !== interaction.user.id) {
+            await i.reply({ content: 'These buttons are not for you!', ephemeral: true });
+            return;
+        }
+        const customId = i.customId;
+        if (customId === 'previous') {
+            currentPage = Math.max(0, currentPage - 1);
+        } else if (customId === 'next') {
+            currentPage = Math.min(totalPages - 1, currentPage + 1);
+        } else if (customId === 'back_to_summary') {
+            await i.deferUpdate();
+            // Fetch all data needed for summary view
+            const stockPortfolio = await tradingService.getPortfolio(targetUserId);
+            const cryptoPortfolio = await cryptoTradingService.getCryptoPortfolio(targetUserId);
+            const formattedCryptoPortfolio = { positions: cryptoPortfolio || [], totalValue: 0 };
+            if (cryptoPortfolio && cryptoPortfolio.length > 0) {
+                formattedCryptoPortfolio.totalValue = cryptoPortfolio.reduce((sum, pos) => sum + (pos.currentValue || 0), 0);
+            }
+            const optionsPortfolio = await optionsService.getOptionsPortfolio(targetUserId);
+            const cashBalance = userDb.getCashBalance(targetUserId);
+            const portfolioSummary = {
+                cashBalance: cashBalance,
+                totalStockValue: stockPortfolio.positions.length > 0 ? stockPortfolio.totalValue - cashBalance : 0,
+                totalCryptoValue: formattedCryptoPortfolio.totalValue,
+                totalOptionsValue: optionsPortfolio.totalValue,
+                totalPortfolioValue: cashBalance + (stockPortfolio.positions.length > 0 ? stockPortfolio.totalValue - cashBalance : 0) + formattedCryptoPortfolio.totalValue + optionsPortfolio.totalValue
+            };
+            await showSummaryView(interaction, stockPortfolio, formattedCryptoPortfolio, portfolioSummary, targetUsername, targetUserId, optionsPortfolio);
+            return;
+        }
+        await i.update({
+            embeds: [generateEmbed(currentPage, sortedPositions)],
+            components: createButtons(currentPage)
+        });
+    });
+    collector.on('end', async () => {
+        try {
+            if (sortedPositions.length > 0) {
+                await interaction.editReply({
+                    embeds: [generateEmbed(currentPage, sortedPositions)],
+                    components: []
+                });
+            }
+        } catch (error) {
+            // ignore
+        }
+    });
 }
