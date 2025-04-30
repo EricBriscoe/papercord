@@ -545,17 +545,22 @@ async function showOptionsView(interaction: ChatInputCommandInteraction, options
         const startIndex = currentPage * OPTIONS_POSITIONS_PER_PAGE;
         const endIndex = Math.min(startIndex + OPTIONS_POSITIONS_PER_PAGE, sortedPositions.length);
         const currentPositions = sortedPositions.slice(startIndex, endIndex);
-        for (let i = 0; i < currentPositions.length; i++) {
-            const position = currentPositions[i];
-            const closeRow = new ActionRowBuilder<ButtonBuilder>()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(`close_${position.id}`)
-                        .setLabel(`Close ${position.symbol} ${position.optionType.toUpperCase()}`)
-                        .setStyle(ButtonStyle.Danger)
-                );
-            closeRows.push(closeRow);
+        
+        // Only add close buttons if the user is viewing their own portfolio
+        if (interaction.user.id === targetUserId) {
+            for (let i = 0; i < currentPositions.length; i++) {
+                const position = currentPositions[i];
+                const closeRow = new ActionRowBuilder<ButtonBuilder>()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(`close_${position.id}`)
+                            .setLabel(`Close ${position.symbol} ${position.optionType.toUpperCase()}`)
+                            .setStyle(ButtonStyle.Danger)
+                    );
+                closeRows.push(closeRow);
+            }
         }
+        
         return [row, ...closeRows];
     };
     const message = await interaction.editReply({
@@ -581,8 +586,19 @@ async function showOptionsView(interaction: ChatInputCommandInteraction, options
         } else if (customId.startsWith('close_')) {
             const positionId = parseInt(customId.split('_')[1]);
             await i.deferUpdate();
+            
+            // Security check: Only allow users to close their own positions
+            if (interaction.user.id !== targetUserId) {
+                await i.followUp({ 
+                    content: "Security Error: You can only close positions in your own portfolio.", 
+                    ephemeral: true 
+                });
+                return;
+            }
+            
             try {
-                const closeResult = await optionsService.closePosition(targetUserId, positionId);
+                // Now we can safely close the position using the interaction user's ID
+                const closeResult = await optionsService.closePosition(interaction.user.id, positionId);
                 if (closeResult.success) {
                     await i.followUp({ content: `✅ ${closeResult.message}`, ephemeral: true });
                     const updatedPortfolio = await optionsService.getOptionsPortfolio(targetUserId);
