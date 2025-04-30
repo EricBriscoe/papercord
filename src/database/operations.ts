@@ -978,3 +978,57 @@ export const cryptoTransactionDb = {
         return stmt.all(userId, limit) as CryptoTransaction[];
     }
 };
+
+// --- Subscription Management ---
+
+/**
+ * Add a channel to the subscriptions table (subscribe)
+ */
+export function subscribeChannel(channelId: string): boolean {
+    try {
+        db.prepare('INSERT OR IGNORE INTO subscriptions (channelId) VALUES (?)').run(channelId);
+        return true;
+    } catch (error) {
+        console.error('Error subscribing channel:', error);
+        return false;
+    }
+}
+
+/**
+ * Remove a channel from the subscriptions table (unsubscribe)
+ */
+export function unsubscribeChannel(channelId: string): boolean {
+    try {
+        const result = db.prepare('DELETE FROM subscriptions WHERE channelId = ?').run(channelId);
+        return result.changes > 0;
+    } catch (error) {
+        console.error('Error unsubscribing channel:', error);
+        return false;
+    }
+}
+
+/**
+ * Check if a channel is subscribed
+ */
+export function isChannelSubscribed(channelId: string): boolean {
+    try {
+        const row = db.prepare('SELECT 1 FROM subscriptions WHERE channelId = ?').get(channelId);
+        return !!row;
+    } catch (error) {
+        console.error('Error checking channel subscription:', error);
+        return false;
+    }
+}
+
+/**
+ * Get all subscribed channel IDs
+ */
+export function getAllSubscribedChannels(): string[] {
+    try {
+        const rows = db.prepare('SELECT channelId FROM subscriptions').all();
+        return rows.map((row: any) => row.channelId);
+    } catch (error) {
+        console.error('Error fetching subscribed channels:', error);
+        return [];
+    }
+}
