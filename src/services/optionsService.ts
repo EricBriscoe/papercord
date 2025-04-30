@@ -10,6 +10,8 @@ import {
     LIQUIDATION_THRESHOLD,
     formatCurrency
 } from '../utils/marginConstants';
+import { broadcastToSubscribedChannels } from '../utils/formatters';
+import { Client } from 'discord.js';
 
 /**
  * Interface for option contract
@@ -901,6 +903,28 @@ export const optionsService = {
                             0,
                             false
                         );
+
+                        if (discordClient) {
+                            broadcastToSubscribedChannels(
+                                discordClient,
+                                {
+                                    title: '⏰ Options Expired: Exercised',
+                                    description: `Your ${option.quantity} ${option.symbol} ${option.optionType.toUpperCase()} contracts with strike price $${option.strikePrice} have expired in-the-money and were automatically exercised.`,
+                                    type: 'options_exercised',
+                                    contractDetails: {
+                                        purchasePrice: option.purchasePrice,
+                                        quantity: option.quantity,
+                                        contractSize: CONTRACT_SIZE,
+                                        position: option.position,
+                                        optionType: option.optionType,
+                                        strikePrice: option.strikePrice,
+                                        stockPrice: stockPrice
+                                    }
+                                },
+                                option.userId,
+                                exerciseValue
+                            );
+                        }
                     } else {
                         optionsDb.updatePositionStatus(option.id!, 'expired');
                         optionsDb.addTransaction(
@@ -917,6 +941,28 @@ export const optionsService = {
                             0,
                             false
                         );
+
+                        if (discordClient) {
+                            broadcastToSubscribedChannels(
+                                discordClient,
+                                {
+                                    title: '⏰ Options Expired: Worthless',
+                                    description: `Your ${option.quantity} ${option.symbol} ${option.optionType.toUpperCase()} contracts with strike price $${option.strikePrice} have expired out-of-the-money and are now worthless.`,
+                                    type: 'options_expired',
+                                    contractDetails: {
+                                        purchasePrice: option.purchasePrice,
+                                        quantity: option.quantity,
+                                        contractSize: CONTRACT_SIZE,
+                                        position: option.position,
+                                        optionType: option.optionType,
+                                        strikePrice: option.strikePrice,
+                                        stockPrice: stockPrice
+                                    }
+                                },
+                                option.userId,
+                                -option.purchasePrice * CONTRACT_SIZE * option.quantity
+                            );
+                        }
                     }
                 } else {
                     if (isInTheMoney) {
@@ -1011,6 +1057,9 @@ export const optionsService = {
                 };
             }
             
+            let issuedWarning = false;
+            let createdMarginCall = false;
+            
             // Warning phase - equity ratio is between warning and margin call threshold
             if (equityRatio <= WARNING_THRESHOLD && equityRatio > MARGIN_CALL_THRESHOLD) {
                 // If no warning has been issued yet, create one
@@ -1021,22 +1070,8 @@ export const optionsService = {
                         warningAmount,
                         `Margin warning: Equity ratio at ${(equityRatio * 100).toFixed(2)}%, approaching maintenance level.`
                     );
-                    
-                    return {
-                        success: true,
-                        message: `Warning issued: Margin equity ratio at ${(equityRatio * 100).toFixed(2)}%, approaching maintenance level of ${(MARGIN_CALL_THRESHOLD * 100).toFixed(2)}%`,
-                        positionsLiquidated: 0,
-                        marginStatus
-                    };
+                    issuedWarning = true;
                 }
-                
-                // Warning already exists, no additional action needed
-                return {
-                    success: true,
-                    message: `Margin warning remains active. Equity ratio at ${(equityRatio * 100).toFixed(2)}%`,
-                    positionsLiquidated: 0,
-                    marginStatus
-                };
             }
             
             // Margin call phase - equity ratio is between margin call and liquidation threshold
@@ -1056,22 +1091,8 @@ export const optionsService = {
                         marginCallAmount,
                         `Margin call: Equity ratio at ${(equityRatio * 100).toFixed(2)}%, below maintenance level. Deposit required.`
                     );
-                    
-                    return {
-                        success: true,
-                        message: `Margin call issued: Equity ratio at ${(equityRatio * 100).toFixed(2)}%, below maintenance level of ${(MARGIN_CALL_THRESHOLD * 100).toFixed(2)}%. Deposit ${formatCurrency(marginCallAmount)} or close positions.`,
-                        positionsLiquidated: 0,
-                        marginStatus
-                    };
+                    createdMarginCall = true;
                 }
-                
-                // Margin call already exists, no additional action needed
-                return {
-                    success: true,
-                    message: `Margin call remains active. Equity ratio at ${(equityRatio * 100).toFixed(2)}%`,
-                    positionsLiquidated: 0,
-                    marginStatus
-                };
             }
             
             // Liquidation phase - equity ratio is at or below liquidation threshold
@@ -1150,21 +1171,24 @@ export const optionsService = {
                     ((finalMarginStatus.portfolioValue - finalMarginStatus.marginUsed) / finalMarginStatus.portfolioValue);
                 
                 // Generate result message
-                if (positionsLiquidated > 0) {
-                    return {
-                        success: true,
-                        message: `Liquidated ${positionsLiquidated} positions to meet margin requirements. New equity ratio: ${(finalEquityRatio * 100).toFixed(2)}%`,
-                        positionsLiquidated,
-                        marginStatus: finalMarginStatus
-                    };
-                } else {
-                    return {
-                        success: false,
-                        message: 'Failed to liquidate positions to meet margin requirements',
-                        positionsLiquidated: 0,
-                        marginStatus: finalMarginStatus
-                    };
+                if (positionsLiquidated > 0 && discordClient) {
+                    broadcastToSubscribedChannels(
+                        discordClient,
+                        {
+                            title: '🚨 Options Liquidation Alert',
+                            description: 'Due to severe margin violation, we have liquidated your riskiest options positions to protect your account. Please review your portfolio and consider adding funds to prevent further liquidations.',
+                            type: 'liquidation'
+                        },
+                        userId
+                    );
                 }
+                
+                return {
+                    success: true,
+                    message: `Liquidated ${positionsLiquidated} positions to meet margin requirements. New equity ratio: ${(finalEquityRatio * 100).toFixed(2)}%`,
+                    positionsLiquidated,
+                    marginStatus: finalMarginStatus
+                };
             }
             
             // Default case
@@ -1277,3 +1301,8 @@ export const optionsService = {
         }
     }
 };
+
+let discordClient: Client | undefined;
+export function setDiscordClient(client: Client) {
+    discordClient = client;
+}

@@ -208,6 +208,11 @@ db.exec(`
     CREATE INDEX IF NOT EXISTS idx_price_lookup ON price_cache(symbol, source, interval, timestamp);
     CREATE INDEX IF NOT EXISTS idx_crypto_portfolio_lookup ON crypto_portfolio(userId, coinId);
     CREATE INDEX IF NOT EXISTS idx_crypto_transactions_lookup ON crypto_transactions(userId, timestamp);
+    
+    CREATE TABLE IF NOT EXISTS subscriptions (
+        channelId TEXT PRIMARY KEY,
+        subscribedAt TEXT DEFAULT (datetime('now', 'utc'))
+    );
 `);
 
 export default db;

@@ -15,10 +15,14 @@ import { cryptoSellCommand } from './commands/crypto_sell';
 import { cryptoPriceCommand } from './commands/crypto_price';
 import { marginCommand } from './commands/margin';
 import { sudoCommand } from './commands/sudo';
+import { subscribeCommand } from './commands/subscribe';
 import { Command } from './models/command';
 import { optionsService } from './services/optionsService';
+import { cryptoTradingService } from './services/cryptoTradingService';
 import { optionsDb } from './database/operations';
 import type { CryptoPosition } from './database/operations';
+import { setDiscordClient as setOptionsDiscordClient } from './services/optionsService';
+import { setDiscordClient as setCryptoDiscordClient } from './services/cryptoTradingService';
 
 // Load environment variables
 dotenv.config();
@@ -67,13 +71,17 @@ const commands = new Collection<string, Command>();
     // Crypto trading
     cryptoBuyCommand, cryptoSellCommand, cryptoPriceCommand,
     // Other commands
-    marginCommand, leaderboardCommand, sudoCommand
+    marginCommand, leaderboardCommand, sudoCommand,
+    // Subscription command
+    subscribeCommand
 ].forEach(command => {
     commands.set(command.name, command);
 });
 
 // Bot initialization and scheduled task setup
 client.once(Events.ClientReady, async (readyClient) => {
+    setOptionsDiscordClient(client);
+    setCryptoDiscordClient(client);
     console.log(`Logged in as ${readyClient.user.tag}!`);
     
     // Register slash commands with Discord API
@@ -223,7 +231,6 @@ function setupLiquidationTask() {
 const cleanupCryptoPositions = async () => {
     try {
         console.log('Cleaning up worthless crypto positions...');
-        const { cryptoTradingService } = await import('./services/cryptoTradingService');
         const { userDb } = await import('./database/operations');
         
         const usersWithCrypto = userDb.getUsersWithCryptoPositions();
@@ -267,7 +274,6 @@ const cleanupCryptoPositions = async () => {
 const checkForDelistedCryptos = async () => {
     try {
         console.log('Checking for delisted cryptocurrencies...');
-        const { cryptoTradingService } = await import('./services/cryptoTradingService');
         const { cryptoPortfolioDb, userDb } = await import('./database/operations');
         
         // Collect all positions across all users

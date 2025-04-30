@@ -1,6 +1,7 @@
 import { coinGeckoService } from './coinGeckoService';
 import { cryptoPortfolioDb, cryptoTransactionDb, userDb } from '../database/operations';
-import { formatCurrency, formatCryptoAmount, formatCryptoPrice } from '../utils/formatters';
+import { formatCurrency, formatCryptoAmount, formatCryptoPrice, broadcastToSubscribedChannels } from '../utils/formatters';
+import { Client } from 'discord.js';
 
 // Safety limits to prevent unreasonable transactions
 const MAX_TRANSACTION_VALUE_USD = 100000000000; // $100 billion max transaction
@@ -570,6 +571,19 @@ export const cryptoTradingService = {
             positionsLiquidated++;
             liquidationDetails.push(`${position.name} (${position.symbol}): ${position.quantity.toExponential(2)} units liquidated at 100% loss - Reason: delisted cryptocurrency`);
           }
+
+          if (discordClient) {
+            await broadcastToSubscribedChannels(
+              discordClient,
+              {
+                title: '💀 Cryptocurrency Delisting Notification',
+                description: `Your ${position.name} (${position.symbol}) position has been liquidated at 100% loss due to the cryptocurrency being delisted from exchanges. The position has been closed.`,
+                type: 'crypto_delisted'
+              },
+              userId,
+              -position.quantity * position.averagePurchasePrice // Pass the loss value
+            );
+          }
           continue; // Skip to next position
         }
         
@@ -609,6 +623,19 @@ export const cryptoTradingService = {
           positionsLiquidated++;
           totalCredited += liquidationValue;
           liquidationDetails.push(`${position.name} (${position.symbol}): ${position.quantity.toExponential(2)} units for ${formatCurrency(liquidationValue)} - Reason: ${reason}`);
+
+          if (discordClient) {
+            await broadcastToSubscribedChannels(
+              discordClient,
+              {
+                title: '🧹 Small Position Cleanup',
+                description: `Your ${position.name} (${position.symbol}) position has been automatically liquidated ${reason === 'dust position (below minimum value threshold)' ? 'due to its minimal value' : 'due to excessive quantity'} to optimize your portfolio.`,
+                type: 'crypto_dust'
+              },
+              userId,
+              liquidationValue - (position.quantity * position.averagePurchasePrice) // Calculate profit/loss
+            );
+          }
         }
       }
       
@@ -642,3 +669,8 @@ export const cryptoTradingService = {
     }
   },
 };
+
+let discordClient: Client | undefined;
+export function setDiscordClient(client: Client) {
+    discordClient = client;
+}

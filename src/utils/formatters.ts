@@ -1,4 +1,6 @@
 import { formatInTimeZone } from 'date-fns-tz';
+import { Client, TextChannel } from 'discord.js';
+import { getAllSubscribedChannels } from '../database/operations';
 
 /**
  * Format a currency value with $ symbol and 2 decimal places
@@ -134,4 +136,187 @@ export function formatCryptoSigFig(value: number, sigFigs: number = 2): string {
   const str = Number(value).toPrecision(sigFigs);
   // Remove trailing decimal if present
   return str.replace(/\.0+$/, '');
+}
+
+/**
+ * Broadcast a message to all subscribed channels, but only if the user is a member of the channel's guild
+ * @param client Discord client
+ * @param messageData Object containing title, description, and type for the embed
+ * @param userId Optional user ID to check membership and mention in the message
+ * @param profitLoss Optional profit/loss to include in the message
+ */
+export async function broadcastToSubscribedChannels(
+    client: Client, 
+    messageData: { 
+        title: string; 
+        description: string; 
+        type: 'liquidation' | 'margin_call' | 'margin_warning' | 'options_exercised' | 'options_expired' | 'crypto_delisted' | 'crypto_dust';
+        contractDetails?: {
+            purchasePrice?: number;
+            closingPrice?: number;
+            quantity?: number;
+            contractSize?: number;
+            position?: 'long' | 'short';
+            optionType?: 'call' | 'put';
+            strikePrice?: number;
+            stockPrice?: number;
+        };
+    },
+    userId?: string, 
+    profitLoss?: number
+) {
+    const channelIds = getAllSubscribedChannels();
+    
+    // Import EmbedBuilder here to avoid circular imports
+    const { EmbedBuilder, Colors } = await import('discord.js');
+    
+    // Create embed with appropriate styling based on type
+    const embed = new EmbedBuilder()
+        .setTitle(messageData.title)
+        .setDescription(messageData.description)
+        .setTimestamp();
+        
+    // Set color based on message type
+    switch (messageData.type) {
+        case 'liquidation':
+            embed.setColor(Colors.Red);
+            break;
+        case 'margin_call':
+            embed.setColor(Colors.Orange);
+            break;
+        case 'margin_warning':
+            embed.setColor(Colors.Yellow);
+            break;
+        case 'options_exercised':
+            embed.setColor(Colors.Green);
+            break;
+        case 'options_expired':
+            embed.setColor(Colors.DarkRed);
+            break;
+        case 'crypto_delisted':
+            embed.setColor(Colors.DarkRed);
+            break;
+        case 'crypto_dust':
+            embed.setColor(Colors.Grey);
+            break;
+        default:
+            embed.setColor(Colors.Blue);
+    }
+    
+    // Add profit/loss field if provided
+    if (profitLoss !== undefined) {
+        const isProfit = profitLoss >= 0;
+        embed.addFields({
+            name: isProfit ? '📈 Profit' : '📉 Loss',
+            value: formatCurrency(Math.abs(profitLoss)),
+            inline: true
+        });
+        
+        // Add calculation explanation for options positions
+        if (messageData.type === 'options_exercised' || messageData.type === 'options_expired') {
+            const details = messageData.contractDetails;
+            if (details && details.purchasePrice !== undefined && details.quantity !== undefined && details.contractSize !== undefined) {
+                let explanation = '';
+                const initialCost = details.purchasePrice * details.contractSize * details.quantity;
+                
+                if (messageData.type === 'options_exercised') {
+                    explanation = `💹 **P/L Calculation**\n`;
+                    explanation += `Initial Cost: ${details.quantity} × ${formatCurrency(details.purchasePrice)} × ${details.contractSize} = ${formatCurrency(initialCost)}\n\n`;
+                    
+                    // Explain exercise value calculation based on option type and position
+                    if (details.optionType && details.strikePrice !== undefined && details.stockPrice !== undefined) {
+                        let exerciseValueCalc = '';
+                        const isLong = details.position === 'long';
+                        
+                        if (details.optionType === 'call') {
+                            // For calls: exercise value comes from stock price > strike price
+                            const valuePerShare = Math.max(0, details.stockPrice - details.strikePrice);
+                            const totalValue = valuePerShare * details.contractSize * details.quantity;
+                            
+                            exerciseValueCalc = `Call Option Value: (Stock Price - Strike Price) × Contract Size × Quantity\n`;
+                            exerciseValueCalc += `= (${formatCurrency(details.stockPrice)} - ${formatCurrency(details.strikePrice)}) × ${details.contractSize} × ${details.quantity}\n`;
+                            exerciseValueCalc += `= ${formatCurrency(valuePerShare)} × ${details.contractSize} × ${details.quantity}\n`;
+                            exerciseValueCalc += `= ${formatCurrency(totalValue)}`;
+                            
+                            explanation += `${exerciseValueCalc}\n\n`;
+                            explanation += `As the ${isLong ? 'buyer' : 'seller'} of this call option, you ${isLong ? 'earned' : 'paid'} the difference between the stock price and strike price.\n\n`;
+                        } else { // put
+                            // For puts: exercise value comes from strike price > stock price
+                            const valuePerShare = Math.max(0, details.strikePrice - details.stockPrice);
+                            const totalValue = valuePerShare * details.contractSize * details.quantity;
+                            
+                            exerciseValueCalc = `Put Option Value: (Strike Price - Stock Price) × Contract Size × Quantity\n`;
+                            exerciseValueCalc += `= (${formatCurrency(details.strikePrice)} - ${formatCurrency(details.stockPrice)}) × ${details.contractSize} × ${details.quantity}\n`;
+                            exerciseValueCalc += `= ${formatCurrency(valuePerShare)} × ${details.contractSize} × ${details.quantity}\n`;
+                            exerciseValueCalc += `= ${formatCurrency(totalValue)}`;
+                            
+                            explanation += `${exerciseValueCalc}\n\n`;
+                            explanation += `As the ${isLong ? 'buyer' : 'seller'} of this put option, you ${isLong ? 'earned' : 'paid'} the difference between the strike price and stock price.\n\n`;
+                        }
+                        
+                        // Final P/L calculation
+                        if (isLong) {
+                            explanation += `P/L = Exercise Value - Initial Cost = ${formatCurrency(profitLoss)}`;
+                        } else {
+                            explanation += `P/L = Premium Received - Exercise Cost = ${formatCurrency(profitLoss)}`;
+                        }
+                    } else {
+                        explanation += `Exercise Value: ${formatCurrency(profitLoss + initialCost)}\n\n`;
+                        explanation += `P/L = Exercise Value - Initial Cost = ${formatCurrency(profitLoss)}`;
+                    }
+                } else if (messageData.type === 'options_expired') {
+                    explanation = `💹 **P/L Calculation**\n`;
+                    explanation += `Initial Cost: ${details.quantity} × ${formatCurrency(details.purchasePrice)} × ${details.contractSize} = ${formatCurrency(initialCost)}\n\n`;
+                    
+                    // Explain expiration based on position type
+                    if (details.position === 'long') {
+                        explanation += `Expiration Value: ${formatCurrency(0)} (Options expired worthless)\n\n`;
+                        explanation += `When a ${details.optionType} option expires out-of-the-money, it has no value. As the buyer, you lose your entire premium.\n\n`;
+                        explanation += `P/L = Expiration Value - Initial Cost = ${formatCurrency(-initialCost)}`;
+                    } else { // short position
+                        explanation += `Expiration Value: ${formatCurrency(initialCost)} (Full premium retained)\n\n`;
+                        explanation += `When a ${details.optionType} option expires out-of-the-money, it has no value. As the seller, you keep the entire premium.\n\n`;
+                        explanation += `P/L = Premium Received = ${formatCurrency(initialCost)}`;
+                    }
+                }
+                
+                if (explanation) {
+                    embed.addFields({
+                        name: 'Calculation Breakdown',
+                        value: explanation
+                    });
+                }
+            }
+        }
+    }
+    
+    // Add footer
+    embed.setFooter({ 
+        text: `PaperCord Trading Bot | ${new Date().toLocaleDateString()}` 
+    });
+    
+    for (const channelId of channelIds) {
+        const channel = await client.channels.fetch(channelId).catch(() => null);
+        if (channel && channel.isTextBased()) {
+            // If userId is provided, check if user is in the guild
+            if (userId && 'guild' in channel && channel.guild) {
+                const member = await channel.guild.members.fetch(userId).catch(() => null);
+                if (!member) continue; // Skip if user is not in this guild
+                
+                // User mention if userId is provided
+                const userMention = userId ? `<@${userId}> ` : '';
+                
+                // Send message with user mention and embed
+                (channel as TextChannel).send({
+                    content: userMention,
+                    embeds: [embed]
+                }).catch(() => {});
+            } else {
+                // Send message with just the embed
+                (channel as TextChannel).send({
+                    embeds: [embed]
+                }).catch(() => {});
+            }
+        }
+    }
 }
