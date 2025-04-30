@@ -738,9 +738,9 @@ async function showStocksView(interaction: ChatInputCommandInteraction, portfoli
                 name: `${pos.symbol}: ${formatCurrency(pos.marketValue || 0)} ${profitLossSymbol} ${formatNumber(pos.percentChange || 0)}%`,
                 value: [
                     `Quantity: ${formatNumber(pos.quantity || 0)}`,
-                    `Average Buy Price: ${formatCurrency(pos.averageBuyPrice || 0)}`,
+                    `Average Buy Price: ${formatCurrency(pos.averagePurchasePrice || 0)}`,
                     `Current Price: ${formatCurrency(pos.currentPrice || 0)}`,
-                    `P/L: ${profitLossSymbol} ${formatCurrency(pos.profitLoss || 0)} (${formatNumber(pos.profitLossPercentage || 0)}%)`
+                    `P/L: ${profitLossSymbol} ${formatCurrency(pos.profitLoss || 0)} (${formatNumber(pos.percentChange || 0)}%)`
                 ].join('\n'),
                 inline: false
             });
