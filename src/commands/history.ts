@@ -45,6 +45,12 @@ export const historyCommand: Command = {
                 { name: 'Stocks', value: 'stocks' },
                 { name: 'Options', value: 'options' }
             ]
+        },
+        {
+            name: 'user',
+            description: 'User ID to look up (default: yourself)',
+            type: ApplicationCommandOptionType.String,
+            required: false
         }
     ],
     execute: async (interaction: ChatInputCommandInteraction) => {
@@ -52,16 +58,41 @@ export const historyCommand: Command = {
             const limit = interaction.options.getInteger('limit') || 10;
             const type = interaction.options.getString('type') || 'all';
             
+            // Get target user ID - either the provided ID or the current user's ID
+            const userOption = interaction.options.getString('user');
+            let targetUserId = interaction.user.id;
+            let targetUsername = interaction.user.username;
+            
+            // Handle user mentions in the format <@123456789012345678> or just plain ID
+            if (userOption) {
+                // Extract user ID from mention format <@123456789012345678> or just use as-is
+                const mentionMatch = userOption.match(/<@!?(\d+)>/);
+                if (mentionMatch) {
+                    targetUserId = mentionMatch[1];
+                } else {
+                    targetUserId = userOption;
+                }
+                
+                // Get username to display
+                try {
+                    const targetUser = await interaction.client.users.fetch(targetUserId);
+                    targetUsername = targetUser.username;
+                } catch (error) {
+                    console.log(`Could not fetch user info for ${targetUserId}, using ID as name`);
+                    targetUsername = targetUserId;
+                }
+            }
+            
             // Get transactions based on selected type
             let stockTransactions: any[] = [];
             let optionsTransactions: any[] = [];
             
             if (type === 'all' || type === 'stocks') {
-                stockTransactions = tradingService.getTransactionHistory(interaction.user.id, limit);
+                stockTransactions = tradingService.getTransactionHistory(targetUserId, limit);
             }
             
             if (type === 'all' || type === 'options') {
-                optionsTransactions = optionsService.getTransactionHistory(interaction.user.id, limit);
+                optionsTransactions = optionsService.getTransactionHistory(targetUserId, limit);
             }
             
             // Combine and convert transactions with explicit type casting
@@ -101,12 +132,16 @@ export const historyCommand: Command = {
             }).slice(0, limit); // Limit the number of transactions
             
             const embed = new EmbedBuilder()
-                .setTitle(`${interaction.user.username}'s Transaction History`)
+                .setTitle(`${targetUsername}'s Transaction History`)
                 .setColor('#0099ff')
                 .setTimestamp();
             
             if (sortedTransactions.length === 0) {
-                embed.setDescription('You have not made any transactions yet.');
+                // Show appropriate message depending on whose history we're looking at
+                const noTransactionsMessage = targetUserId === interaction.user.id 
+                    ? 'You have not made any transactions yet.'
+                    : `${targetUsername} has not made any transactions yet.`;
+                embed.setDescription(noTransactionsMessage);
             } else {
                 let transactionsText = '';
                 
@@ -156,12 +191,18 @@ export const historyCommand: Command = {
             if (type !== 'all') {
                 footerText += ` (${type} only)`;
             }
+            
+            // Add user info to footer if looking at someone else's history
+            if (targetUserId !== interaction.user.id) {
+                footerText += ` | Requested by ${interaction.user.username}`;
+            }
+            
             embed.setFooter({ text: footerText });
             
             await interaction.editReply({ embeds: [embed] });
         } catch (error) {
             console.error('History command error:', error);
-            await interaction.editReply('An error occurred while fetching your transaction history. Please try again later.');
+            await interaction.editReply('An error occurred while fetching transaction history. Please try again later.');
         }
     }
 };

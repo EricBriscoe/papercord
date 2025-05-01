@@ -16,6 +16,7 @@ const SUPERUSER_ID = '131835640827346944';
  */
 enum SudoSubcommand {
     RESET_USER = 'reset_user',
+    ADJUST_CASH = 'adjust_cash',
     // Add more subcommands here as needed
     // Example: BAN_USER = 'ban_user',
 }
@@ -49,6 +50,31 @@ export const sudoCommand: Command = {
                 }
             ]
         },
+        {
+            name: SudoSubcommand.ADJUST_CASH,
+            description: 'Adjust a user\'s cash balance (add or remove funds)',
+            type: ApplicationCommandOptionType.Subcommand,
+            options: [
+                {
+                    name: 'user_id',
+                    description: 'Discord user ID to modify balance for',
+                    type: ApplicationCommandOptionType.String,
+                    required: true
+                },
+                {
+                    name: 'amount',
+                    description: 'Amount to add (positive) or remove (negative) from balance',
+                    type: ApplicationCommandOptionType.Number,
+                    required: true
+                },
+                {
+                    name: 'reason',
+                    description: 'Reason for adjustment (e.g. bug compensation, error correction)',
+                    type: ApplicationCommandOptionType.String,
+                    required: true
+                }
+            ]
+        },
         // More subcommands can be added here in the future
     ],
     execute: async (interaction: ChatInputCommandInteraction) => {
@@ -67,6 +93,9 @@ export const sudoCommand: Command = {
         switch (subcommand) {
             case SudoSubcommand.RESET_USER:
                 await executeResetUser(interaction);
+                break;
+            case SudoSubcommand.ADJUST_CASH:
+                await executeAdjustCash(interaction);
                 break;
             default:
                 await interaction.editReply({
@@ -154,5 +183,84 @@ async function executeResetUser(interaction: ChatInputCommandInteraction): Promi
     } catch (error) {
         console.error('Reset user error:', error);
         await interaction.editReply(`An error occurred while resetting user ${userId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+}
+
+/**
+ * Adjust a user's cash balance (subcommand handler)
+ */
+async function executeAdjustCash(interaction: ChatInputCommandInteraction): Promise<void> {
+    const userId = interaction.options.getString('user_id', true);
+    const amount = interaction.options.getNumber('amount', true);
+    const reason = interaction.options.getString('reason', true);
+    
+    try {
+        // Check if user exists first
+        const userExists = db.prepare('SELECT 1 FROM users WHERE userId = ?').get(userId);
+        
+        if (!userExists) {
+            console.log(`Superuser ${interaction.user.id} attempted to adjust cash for non-existent user ${userId}`);
+            await interaction.editReply(`User ID ${userId} does not exist in the database. No action taken.`);
+            return;
+        }
+        
+        // Get current cash balance
+        const currentBalance = userDb.getCashBalance(userId);
+        const newBalance = currentBalance + amount;
+        
+        // Prevent negative balances if removing funds would result in negative balance
+        if (newBalance < 0) {
+            await interaction.editReply(`Cannot adjust balance: User ${userId} has ${currentBalance.toLocaleString('en-US', {
+                style: 'currency',
+                currency: 'USD'
+            })} but you're trying to remove ${Math.abs(amount).toLocaleString('en-US', {
+                style: 'currency',
+                currency: 'USD'
+            })}. This would result in a negative balance.`);
+            return;
+        }
+        
+        // Log the adjustment
+        console.log(`Superuser ${interaction.user.id} is adjusting cash for user ${userId}: ${amount > 0 ? '+' : ''}${amount} (Reason: ${reason})`);
+        
+        // Update the cash balance
+        userDb.updateCashBalance(userId, newBalance);
+        
+        // Record this as a special transaction for auditing
+        const transactionType = amount > 0 ? 'received' : 'removed';
+        db.prepare(`
+            INSERT INTO transactions (userId, symbol, quantity, price, type)
+            VALUES (?, ?, ?, ?, ?)
+        `).run(userId, 'ADMIN', 1, Math.abs(amount), 'admin');
+        
+        // Create success embed
+        const actionType = amount > 0 ? 'added to' : 'removed from';
+        const embed = new EmbedBuilder()
+            .setTitle('Admin Action: Cash Adjustment')
+            .setDescription(`${Math.abs(amount).toLocaleString('en-US', {
+                style: 'currency',
+                currency: 'USD'
+            })} has been ${actionType} <@${userId}>'s account.`)
+            .setColor(amount > 0 ? '#00FF00' : '#FF0000')
+            .addFields([
+                { name: 'New Balance', value: newBalance.toLocaleString('en-US', {
+                    style: 'currency',
+                    currency: 'USD'
+                }), inline: true },
+                { name: 'Adjustment', value: `${amount > 0 ? '+' : ''}${amount.toLocaleString('en-US', {
+                    style: 'currency',
+                    currency: 'USD'
+                })}`, inline: true },
+                { name: 'Reason', value: reason, inline: false },
+                { name: 'Executed By', value: `<@${interaction.user.id}>`, inline: true },
+                { name: 'Target User', value: `<@${userId}>`, inline: true },
+            ])
+            .setFooter({ text: 'Superuser Command' })
+            .setTimestamp();
+            
+        await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+        console.error('Adjust cash error:', error);
+        await interaction.editReply(`An error occurred while adjusting cash for user ${userId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
 }
