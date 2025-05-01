@@ -92,6 +92,7 @@ client.once(Events.ClientReady, async (readyClient) => {
         setupDailyOptionsExpiryCheck();
         setupMarginMonitoringTask();
         setupLiquidationTask();
+        setupInactiveUserCleanupTask();  // Add the new user cleanup task
         
         // Run crypto management tasks
         await initializeCryptoManagement();
@@ -222,6 +223,46 @@ function setupLiquidationTask() {
             console.error('[Scheduled Task Error] Error processing liquidations:', error);
         }
     }, 3600000); // 1 hour
+}
+
+/**
+ * Setup task for cleaning up inactive users
+ * This will find and remove users that still have exactly the starting $100,000
+ * and have no other assets (stocks, options, crypto)
+ */
+function setupInactiveUserCleanupTask() {
+    // Run immediately at startup
+    (async () => {
+        try {
+            console.log('[Startup] Running initial inactive user cleanup...');
+            const { userDb } = await import('./database/operations');
+            const result = userDb.cleanupInactiveUsers();
+            if (result.deletedCount > 0) {
+                console.log(`[Startup] Removed ${result.deletedCount} inactive users from the database`);
+            } else {
+                console.log('[Startup] No inactive users found for cleanup');
+            }
+        } catch (error) {
+            console.error('[Startup Error] Error cleaning up inactive users:', error);
+        }
+    })();
+    
+    // Then set up interval to run weekly
+    setInterval(async () => {
+        try {
+            console.log('[Scheduled Task] Running weekly inactive user cleanup...');
+            const { userDb } = await import('./database/operations');
+            const result = userDb.cleanupInactiveUsers();
+            if (result.deletedCount > 0) {
+                console.log(`[Scheduled Task] Removed ${result.deletedCount} inactive users from the database`);
+                console.log(`[Scheduled Task] User IDs removed: ${result.userIds.join(', ')}`);
+            } else {
+                console.log('[Scheduled Task] No inactive users found for cleanup');
+            }
+        } catch (error) {
+            console.error('[Scheduled Task Error] Error cleaning up inactive users:', error);
+        }
+    }, 604800000); // 7 days (weekly)
 }
 
 /**

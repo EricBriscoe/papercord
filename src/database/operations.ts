@@ -182,6 +182,102 @@ export const userDb = {
         `);
         const results = stmt.all() as {userId: string}[];
         return results.map(row => row.userId);
+    },
+    
+    /**
+     * Finds and deletes inactive users who still have the default $100,000 balance
+     * and no assets across stocks, options, or crypto
+     * 
+     * @returns Information about deleted users
+     */
+    cleanupInactiveUsers(): { deletedCount: number, userIds: string[] } {
+        try {
+            // Find users with exactly $100,000 who might be inactive
+            const potentialInactiveUsers = db.prepare(`
+                SELECT userId FROM users 
+                WHERE cashBalance = 100000.00 
+                AND marginBalance = 0 
+                AND marginUsed = 0
+            `).all() as { userId: string }[];
+            
+            if (potentialInactiveUsers.length === 0) {
+                return { deletedCount: 0, userIds: [] };
+            }
+            
+            const usersToDelete: string[] = [];
+            
+            // For each potential user, check if they have any assets anywhere
+            for (const user of potentialInactiveUsers) {
+                const userId = user.userId;
+                
+                // Check if they have stock positions
+                const hasStocks = db.prepare(`
+                    SELECT 1 FROM portfolio 
+                    WHERE userId = ? AND quantity > 0 
+                    LIMIT 1
+                `).get(userId);
+                
+                // Check if they have option positions
+                const hasOptions = db.prepare(`
+                    SELECT 1 FROM options_positions 
+                    WHERE userId = ? AND status = 'open' 
+                    LIMIT 1
+                `).get(userId);
+                
+                // Check if they have crypto positions
+                const hasCrypto = db.prepare(`
+                    SELECT 1 FROM crypto_portfolio 
+                    WHERE userId = ? AND quantity > 0 
+                    LIMIT 1
+                `).get(userId);
+                
+                // Check if they have pending margin calls
+                const hasMarginCalls = db.prepare(`
+                    SELECT 1 FROM margin_calls 
+                    WHERE userId = ? AND status = 'pending' 
+                    LIMIT 1
+                `).get(userId);
+                
+                // If they have no assets anywhere, add to delete list
+                if (!hasStocks && !hasOptions && !hasCrypto && !hasMarginCalls) {
+                    usersToDelete.push(userId);
+                }
+            }
+            
+            if (usersToDelete.length === 0) {
+                return { deletedCount: 0, userIds: [] };
+            }
+            
+            console.log(`Found ${usersToDelete.length} inactive users to delete from database`);
+            
+            // Begin transaction to delete users
+            const transaction = db.transaction((userIds: string[]) => {
+                for (const userId of userIds) {
+                    // Delete user from all tables
+                    db.prepare('DELETE FROM users WHERE userId = ?').run(userId);
+                    db.prepare('DELETE FROM portfolio WHERE userId = ?').run(userId);
+                    db.prepare('DELETE FROM transactions WHERE userId = ?').run(userId);
+                    db.prepare('DELETE FROM options_positions WHERE userId = ?').run(userId);
+                    db.prepare('DELETE FROM options_transactions WHERE userId = ?').run(userId);
+                    db.prepare('DELETE FROM crypto_portfolio WHERE userId = ?').run(userId);
+                    db.prepare('DELETE FROM crypto_transactions WHERE userId = ?').run(userId);
+                    db.prepare('DELETE FROM margin_calls WHERE userId = ?').run(userId);
+                    
+                    console.log(`Deleted inactive user: ${userId}`);
+                }
+            });
+            
+            // Execute transaction
+            transaction(usersToDelete);
+            
+            return {
+                deletedCount: usersToDelete.length,
+                userIds: usersToDelete
+            };
+        } catch (error) {
+            console.error('Error cleaning up inactive users:', error);
+            return { deletedCount: 0, userIds: [] };
+        }
     }
 };
 
