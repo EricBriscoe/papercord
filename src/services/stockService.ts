@@ -1,27 +1,9 @@
-import fetch from 'node-fetch';
-const finnhub = require('finnhub');
-import dotenv from 'dotenv';
 import { priceCacheDb } from '../database/operations';
-
-dotenv.config();
-
-// API key should be set in .env file as FINNHUB_API_KEY
-const API_KEY = process.env.FINNHUB_API_KEY || '';
-
-// Initialize Finnhub client
-const api_key = finnhub.ApiClient.instance.authentications['api_key'];
-api_key.apiKey = API_KEY;
-const finnhubClient = new finnhub.DefaultApi();
-
-// Log API key status for debugging (without revealing the full key)
-if (API_KEY) {
-    console.log(`Finnhub API key found (starts with: ${API_KEY.substring(0, 3)}...)`);
-} else {
-    console.log('No Finnhub API key found, using dummy data');
-}
+import { yfDataService, YFServiceError, YFRateLimitError } from './yfDataService'; // Assuming yfDataService is in the same directory or path is adjusted
 
 // Define cache settings
-const CACHE_MAX_AGE_MINUTES = 1; // Maximum age of cache in minutes
+const CACHE_MAX_AGE_MINUTES = 1; // Maximum age of cache in minutes for real-time quotes
+const HISTORICAL_CACHE_MAX_AGE_HOURS = 24; // Max age for historical data cache
 
 /**
  * Stock market service
@@ -37,66 +19,52 @@ export const stockService = {
             // Check database cache first
             const cachedData = priceCacheDb.getLatestPrice(
                 normalizedSymbol,
-                'finnhub',
+                'yahoo', // Source updated to 'yahoo'
                 CACHE_MAX_AGE_MINUTES
             );
-            
+
             if (cachedData) {
-                return { 
-                    symbol: normalizedSymbol, 
+                return {
+                    symbol: normalizedSymbol,
                     price: cachedData.price,
                     cached: true
                 };
             }
-            
-            // Return dummy data if no API key
-            if (!API_KEY) {
-                const dummyPrice = await this.getDummyStockPrice(normalizedSymbol);
-                
-                // Store in database cache
+
+            // Fetch from yfDataService
+            const quoteData = await yfDataService.getQuote(normalizedSymbol);
+
+            if (quoteData && typeof quoteData.regularMarketPrice === 'number') {
+                // Store price in database cache
                 priceCacheDb.storePrice(
                     normalizedSymbol,
-                    dummyPrice,
-                    'finnhub',
-                    new Date(),
-                    '1m'
+                    quoteData.regularMarketPrice,
+                    'yahoo', // Source updated to 'yahoo'
+                    new Date(quoteData.regularMarketTime ? quoteData.regularMarketTime * 1000 : Date.now()),
+                    '1m' // Interval for quote data
                 );
-                
-                return { symbol: normalizedSymbol, price: dummyPrice };
+
+                return { symbol: normalizedSymbol, price: quoteData.regularMarketPrice };
+            } else {
+                // Handle cases where price might be null or undefined from yfDataService
+                const errorMessage = quoteData && (quoteData as any).error ? (quoteData as any).error : 'Could not fetch stock price or invalid symbol';
+                return {
+                    symbol: normalizedSymbol,
+                    price: null,
+                    error: errorMessage
+                };
             }
-            
-            return new Promise((resolve) => {
-                finnhubClient.quote(normalizedSymbol, (error, data, response) => {
-                    if (error) {
-                        resolve({ symbol: normalizedSymbol, price: null, error: error.message });
-                        return;
-                    }
-                    
-                    if (data && typeof data.c === 'number') {
-                        // Store price in database cache
-                        priceCacheDb.storePrice(
-                            normalizedSymbol,
-                            data.c,
-                            'finnhub',
-                            new Date(),
-                            '1m'
-                        );
-                        
-                        resolve({ symbol: normalizedSymbol, price: data.c });
-                    } else {
-                        resolve({ 
-                            symbol: normalizedSymbol, 
-                            price: null, 
-                            error: 'Could not fetch stock price or invalid symbol' 
-                        });
-                    }
-                });
-            });
         } catch (error) {
-            return { 
-                symbol, 
-                price: null, 
-                error: error instanceof Error ? error.message : 'Unknown error' 
+            let errorMessage = 'Unknown error fetching stock price';
+            if (error instanceof YFServiceError || error instanceof YFRateLimitError) {
+                errorMessage = error.message;
+            } else if (error instanceof Error) {
+                errorMessage = error.message;
+            }
+            return {
+                symbol,
+                price: null,
+                error: errorMessage
             };
         }
     },
@@ -120,96 +88,84 @@ export const stockService = {
      * Get dummy stock price to use when no API key available
      * This is for testing purposes only
      */
-    async getDummyStockPrice(symbol: string): Promise<number> {
-        // Generate a random price between 50 and 500
-        // In real app, use actual API call
-        const basePrice = Math.floor(Math.random() * 450) + 50;
-        const cents = Math.floor(Math.random() * 100) / 100;
-        return basePrice + cents;
-    },
+    // Removed getDummyStockPrice as it's no longer needed with yfDataService handling API issues.
     
     /**
-     * Get historical prices for a symbol from cache
+     * Get historical prices for a symbol.
+     * Leverages yfDataService which includes its own caching logic.
      */
-    getHistoricalPrices(symbol: string, limit: number = 30): any[] {
-        const prices = priceCacheDb.getTimeSeries(
-            symbol,
-            'finnhub',
-            '1d',
-            limit
-        );
-        
-        return prices.map(entry => ({
-            symbol: entry.symbol,
-            price: entry.price,
-            timestamp: entry.timestamp
-        }));
+    async getHistoricalPrices(symbol: string, periodMinutes: number = 30 * 24 * 60, intervalMinutes: number = 24 * 60): Promise<any[]> {
+        try {
+            const normalizedSymbol = symbol.toUpperCase();
+            const historicalData = await yfDataService.getHistoricalData(normalizedSymbol, periodMinutes, intervalMinutes);
+
+            if (historicalData && historicalData.chart && historicalData.chart.result && historicalData.chart.result.length > 0) {
+                const chartResult = historicalData.chart.result[0];
+                if (chartResult.timestamp && chartResult.indicators && chartResult.indicators.quote && chartResult.indicators.quote.length > 0) {
+                    const timestamps = chartResult.timestamp;
+                    const closes = chartResult.indicators.quote[0].close;
+
+                    if (closes) {
+                        return timestamps.map((ts, index) => ({
+                            symbol: normalizedSymbol,
+                            price: closes[index],
+                            timestamp: new Date(ts * 1000).toISOString() // Convert UNIX timestamp to ISO string
+                        }));
+                    }
+                }
+            }
+            return []; // Return empty if no data or malformed
+        } catch (error) {
+            console.error(`Error fetching historical prices for ${symbol} via yfDataService:`, error);
+            return []; // Return empty on error
+        }
     },
-    
+
     /**
-     * Search for stock symbols
+     * Search for stock symbols using yfDataService
      */
     async searchSymbol(query: string): Promise<{ symbol: string; description: string }[]> {
         try {
-            if (!API_KEY) {
-                return [
-                    { symbol: 'AAPL', description: 'Apple Inc.' },
-                    { symbol: 'MSFT', description: 'Microsoft Corporation' },
-                    { symbol: 'AMZN', description: 'Amazon.com Inc.' },
-                    { symbol: 'GOOGL', description: 'Alphabet Inc.' },
-                    { symbol: 'TSLA', description: 'Tesla Inc.' }
-                ].filter(item => 
-                    item.symbol.includes(query.toUpperCase()) || 
-                    item.description.toLowerCase().includes(query.toLowerCase())
-                );
-            }
-            
-            return new Promise((resolve) => {
-                finnhubClient.symbolSearch(query, (error, data, response) => {
-                    if (error || !data || !data.result) {
-                        resolve([]);
-                        return;
-                    }
-                    
-                    // Filter US equities only
-                    const stocks = data.result
-                        .filter(item => item.type === 'Common Stock' && item.exchange === 'NYSE' || item.exchange === 'NASDAQ')
-                        .map(item => ({
-                            symbol: item.symbol,
-                            description: item.description
-                        }));
-                        
-                    resolve(stocks);
-                });
-            });
+            const results = await yfDataService.searchSymbols(query);
+            return results.map(item => ({
+                symbol: item.symbol,
+                description: item.shortname || item.longname || item.symbol // Use shortname, fallback to longname or symbol
+            }));
         } catch (error) {
-            console.error('Error searching for symbol:', error);
+            console.error(`Error searching for symbol "${query}" via yfDataService:`, error);
             return [];
         }
     },
-    
+
     /**
-     * Get company information
+     * Get company information using yfDataService.
+     * This will primarily use data available from the /quote endpoint of yf_service.py.
+     * For more detailed info like logo or website, yf_service.py might need enhancement.
      */
     async getCompanyInfo(symbol: string): Promise<any> {
-        if (!API_KEY) {
-            return {
-                name: `${symbol} Inc.`,
-                market: 'US',
-                logo: 'https://example.com/logo.png',
-                weburl: 'https://example.com'
-            };
-        }
-        
-        return new Promise((resolve) => {
-            finnhubClient.companyProfile2({ 'symbol': symbol.toUpperCase() }, (error, data, response) => {
-                if (error || !data) {
-                    resolve(null);
-                    return;
-                }
+        try {
+            const normalizedSymbol = symbol.toUpperCase();
+            const quoteData = await yfDataService.getQuote(normalizedSymbol);
+
+            if (quoteData) {
+                // Spread all properties from quoteData and then specifically set/override any needed ones.
+                const companyDetails = {
+                    ...quoteData, // Spread all fields from the yfDataService response
+                    symbol: quoteData.symbol || normalizedSymbol, // Ensure symbol is present
+                    name: quoteData.longName || quoteData.shortName || normalizedSymbol, // Preferred display name
+                    logo: quoteData.logo_url || null, // Map logo_url to logo
+                    weburl: quoteData.website || null // Map website to weburl
+                };
+                // Remove original keys if they were mapped to new ones, to avoid redundancy if names differ
+                if ('logo_url' in companyDetails && companyDetails.logo_url !== companyDetails.logo) delete (companyDetails as any).logo_url;
+                if ('website' in companyDetails && companyDetails.website !== companyDetails.weburl) delete (companyDetails as any).website;
                 
-                resolve(data);
-            });
-        });
+                return companyDetails;
+            }
+            return null; // Return null if no data
+        } catch (error) {
+            console.error(`Error fetching company info for ${symbol} via yfDataService:`, error);
+            return null;
+        }
     }
 };

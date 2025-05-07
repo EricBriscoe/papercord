@@ -673,7 +673,7 @@ export interface PriceCache {
     symbol: string;
     price: number;
     timestamp: string;
-    source: 'finnhub' | 'yahoo' | 'coingecko';
+    source: 'yahoo' | 'coingecko'; // Removed 'finnhub'
     interval: string;
 }
 
@@ -684,7 +684,7 @@ export const priceCacheDb = {
     storePrice(
         symbol: string,
         price: number,
-        source: 'finnhub' | 'yahoo' | 'coingecko',
+        source: 'yahoo' | 'coingecko', // Removed 'finnhub'
         timestamp: Date = new Date(),
         interval: string = '1m'
     ): void {
@@ -712,7 +712,7 @@ export const priceCacheDb = {
         symbol: string;
         price: number;
         timestamp: Date;
-        source: 'finnhub' | 'yahoo' | 'coingecko';
+        source: 'yahoo' | 'coingecko'; // Removed 'finnhub'
         interval: string;
     }>): void {
         const stmt = db.prepare(`
@@ -777,7 +777,7 @@ export const priceCacheDb = {
      */
     getLatestPrice(
         symbol: string,
-        source: 'finnhub' | 'yahoo' | 'coingecko',
+        source: 'yahoo' | 'coingecko', // Removed 'finnhub'
         maxAgeMinutes: number = 15
     ): PriceCache | undefined {
         const stmt = db.prepare(`
@@ -800,7 +800,7 @@ export const priceCacheDb = {
      */
     getTimeSeries(
         symbol: string,
-        source: 'finnhub' | 'yahoo' | 'coingecko',
+        source: 'yahoo' | 'coingecko', // Removed 'finnhub'
         interval: string = '1d',
         limit: number = 30,
         startDate?: Date,
@@ -839,7 +839,7 @@ export const priceCacheDb = {
      */
     hasAdequateHistoricalData(
         symbol: string,
-        source: 'finnhub' | 'yahoo' | 'coingecko',
+        source: 'yahoo' | 'coingecko', // Removed 'finnhub'
         interval: string = '1d', 
         minDataPoints: number = 20,
         maxAgeInDays: number = 30
@@ -871,7 +871,7 @@ export const priceCacheDb = {
      */
     hasCompleteCoverage(
         symbol: string,
-        source: 'finnhub' | 'yahoo' | 'coingecko',
+        source: 'yahoo' | 'coingecko', // Removed 'finnhub'
         intervalMinutes: number = 1440, // Default to daily (24 hours * 60 minutes)
         durationMinutes: number = 43200 // Default to 30 days
     ): boolean {
@@ -952,7 +952,7 @@ export const priceCacheDb = {
      */
     getLastTimestamp(
         symbol: string,
-        source: 'finnhub' | 'yahoo' | 'coingecko',
+        source: 'yahoo' | 'coingecko', // Removed 'finnhub'
         interval: string = '1d'
     ): string | null {
         const stmt = db.prepare(`
@@ -976,7 +976,7 @@ export const priceCacheDb = {
      */
     getAvailableIntervals(
         symbol: string,
-        source: 'finnhub' | 'yahoo' | 'coingecko'
+        source: 'yahoo' | 'coingecko' // Removed 'finnhub'
     ): string[] {
         const stmt = db.prepare(`
             SELECT DISTINCT interval FROM price_cache

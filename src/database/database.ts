@@ -17,77 +17,93 @@ db.pragma('foreign_keys = ON');
 // Function to update existing schemas when needed
 function updateDatabaseSchema() {
     console.log('Checking for schema updates...');
-    
+    let currentUserVersion = (db.pragma('user_version', { simple: true }) as number) || 0;
+    console.log(`Current database user_version: ${currentUserVersion}`);
+
     try {
-        // Check if marginBalance column exists in users table
-        const userTableInfo = db.prepare("PRAGMA table_info(users)").all() as any[];
-        const hasMarginBalance = userTableInfo.some(column => column.name === 'marginBalance');
-        
-        if (!hasMarginBalance) {
-            console.log('Adding marginBalance column to users table...');
-            
-            // Add marginBalance column with default value of 0
-            db.exec('ALTER TABLE users ADD COLUMN marginBalance REAL DEFAULT 0');
-            
-            console.log('Successfully added marginBalance column to users table.');
-        }
-        
-        // Check if marginUsed column exists in users table
-        const hasMarginUsed = userTableInfo.some(column => column.name === 'marginUsed');
-        
-        if (!hasMarginUsed) {
-            console.log('Adding marginUsed column to users table...');
-            
-            // Add marginUsed column with default value of 0
-            db.exec('ALTER TABLE users ADD COLUMN marginUsed REAL DEFAULT 0');
-            
-            console.log('Successfully added marginUsed column to users table.');
+        if (currentUserVersion < 1) {
+            console.log('Running migration for user_version < 1 (margin columns)...');
+            // Check if users table exists before trying to get its info
+            const usersTableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get();
+            if (usersTableExists) {
+                const userTableInfo = db.prepare("PRAGMA table_info(users)").all() as any[];
+                const hasMarginBalance = userTableInfo.some(column => column.name === 'marginBalance');
+                if (!hasMarginBalance) {
+                    console.log('Adding marginBalance column to users table...');
+                    db.exec('ALTER TABLE users ADD COLUMN marginBalance REAL DEFAULT 0');
+                    console.log('Successfully added marginBalance column.');
+                }
+                const hasMarginUsed = userTableInfo.some(column => column.name === 'marginUsed');
+                if (!hasMarginUsed) {
+                    console.log('Adding marginUsed column to users table...');
+                    db.exec('ALTER TABLE users ADD COLUMN marginUsed REAL DEFAULT 0');
+                    console.log('Successfully added marginUsed column.');
+                }
+            } else {
+                console.log('Users table does not exist yet, skipping margin column additions for now.');
+            }
+            db.pragma(`user_version = 1`);
+            currentUserVersion = 1; // Update for next check
+            console.log('Migrations for user_version < 1 completed. Set user_version = 1.');
         }
 
-        // Check if we need to update the price_cache table's source constraint
-        const sourceConstraint = db.prepare(`
-            SELECT sql FROM sqlite_master 
-            WHERE type='table' AND name='price_cache'
-        `).get() as { sql: string } | undefined;
-        
-        if (sourceConstraint && sourceConstraint.sql && 
-            sourceConstraint.sql.includes("source IN ('finnhub', 'yahoo')") && 
-            !sourceConstraint.sql.includes("'coingecko'")) {
-            
-            console.log('Updating price_cache table to include coingecko source...');
-            
-            // We need to recreate the table with the updated constraint
-            // SQLite doesn't allow direct ALTER of CHECK constraints
-            
-            // 1. First rename the existing table
-            db.exec('ALTER TABLE price_cache RENAME TO price_cache_old');
-            
-            // 2. Create new table with updated constraint
-            db.exec(`
-                CREATE TABLE price_cache (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT NOT NULL,
-                    price REAL NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    source TEXT CHECK(source IN ('finnhub', 'yahoo', 'coingecko')) NOT NULL,
-                    interval TEXT DEFAULT '1m' NOT NULL,
-                    UNIQUE(symbol, source, interval, timestamp)
-                )
-            `);
-            
-            // 3. Copy data from old table to new one
-            db.exec('INSERT INTO price_cache SELECT * FROM price_cache_old');
-            
-            // 4. Drop the old table
-            db.exec('DROP TABLE price_cache_old');
-            
-            // 5. Recreate the index
-            db.exec('CREATE INDEX idx_price_lookup ON price_cache(symbol, source, interval, timestamp)');
-            
-            console.log('Successfully updated price_cache table schema.');
+        if (currentUserVersion < 2) {
+            console.log('Running migration for user_version < 2 (price_cache Finnhub removal)...');
+            const priceCacheTableInfo = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='price_cache'").get() as { sql: string } | undefined;
+
+            let needsPriceCacheMigration = false;
+            if (priceCacheTableInfo && priceCacheTableInfo.sql) {
+                // Check if 'finnhub' is part of the source constraint
+                if (priceCacheTableInfo.sql.includes("'finnhub'")) {
+                    needsPriceCacheMigration = true;
+                }
+            }
+
+            if (needsPriceCacheMigration) {
+                console.log('price_cache table needs migration to remove Finnhub.');
+                db.exec('PRAGMA foreign_keys=OFF;'); // Disable foreign keys for schema changes
+                const transaction = db.transaction(() => {
+                    console.log("Updating 'finnhub' source to 'yahoo' in price_cache data...");
+                    db.exec("UPDATE price_cache SET source = 'yahoo' WHERE source = 'finnhub';");
+
+                    console.log('Recreating price_cache table with updated source constraint (yahoo, coingecko)...');
+                    db.exec('ALTER TABLE price_cache RENAME TO price_cache_old_v2_migration');
+                    db.exec(`
+                        CREATE TABLE price_cache (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            symbol TEXT NOT NULL,
+                            price REAL NOT NULL,
+                            timestamp TEXT NOT NULL,
+                            source TEXT CHECK(source IN ('yahoo', 'coingecko')) NOT NULL,
+                            interval TEXT DEFAULT '1m' NOT NULL,
+                            UNIQUE(symbol, source, interval, timestamp)
+                        )
+                    `);
+                    // Copy data from the old table to the new one
+                    db.exec('INSERT INTO price_cache (id, symbol, price, timestamp, source, interval) SELECT id, symbol, price, timestamp, source, interval FROM price_cache_old_v2_migration;');
+                    db.exec('DROP TABLE price_cache_old_v2_migration;');
+                    // Recreate the index if it existed or is desired
+                    db.exec('CREATE INDEX IF NOT EXISTS idx_price_lookup ON price_cache(symbol, source, interval, timestamp)');
+                    console.log('Successfully migrated price_cache table.');
+                });
+                
+                try {
+                    transaction(); // Execute the transaction
+                } finally {
+                    db.exec('PRAGMA foreign_keys=ON;'); // Re-enable foreign keys
+                }
+            } else {
+                console.log('price_cache table does not require Finnhub removal migration (e.g., schema already updated or table does not exist yet).');
+            }
+            db.pragma(`user_version = 2`);
+            // currentUserVersion = 2; // No need to update here as it's the last migration step in this function
+            console.log('Migrations for user_version < 2 completed. Set user_version = 2.');
         }
+        // The old block that specifically checked for adding 'coingecko' if 'finnhub' and 'yahoo' were present
+        // is now superseded by the user_version = 2 migration logic above.
     } catch (error) {
         console.error('Error updating database schema:', error);
+        // Depending on the error, you might want to re-throw or handle it to prevent app startup
     }
 }
 
@@ -200,7 +216,7 @@ db.exec(`
         symbol TEXT NOT NULL,
         price REAL NOT NULL,
         timestamp TEXT NOT NULL,
-        source TEXT CHECK(source IN ('finnhub', 'yahoo', 'coingecko')) NOT NULL,
+        source TEXT CHECK(source IN ('yahoo', 'coingecko')) NOT NULL,
         interval TEXT DEFAULT '1m' NOT NULL,
         UNIQUE(symbol, source, interval, timestamp)
     );

@@ -204,7 +204,7 @@ export const coinGeckoService = {
                 symbol: string;
                 price: number;
                 timestamp: Date;
-                source: 'finnhub' | 'yahoo' | 'coingecko';
+                source: 'yahoo' | 'coingecko'; // Removed 'finnhub'
                 interval: string;
             }> = [];
             
@@ -453,7 +453,7 @@ export const coinGeckoService = {
                 symbol: string;
                 price: number;
                 timestamp: Date;
-                source: 'finnhub' | 'yahoo' | 'coingecko';
+                source: 'yahoo' | 'coingecko'; // Removed 'finnhub'
                 interval: string;
             }> = [];
             
@@ -528,7 +528,7 @@ export const coinGeckoService = {
                 symbol: string;
                 price: number;
                 timestamp: Date;
-                source: 'finnhub' | 'yahoo' | 'coingecko';
+                source: 'yahoo' | 'coingecko'; // Removed 'finnhub'
                 interval: string;
             }> = [];
             
@@ -669,7 +669,7 @@ export const coinGeckoService = {
                     symbol: string;
                     price: number;
                     timestamp: Date;
-                    source: 'finnhub' | 'yahoo' | 'coingecko';
+                    source: 'yahoo' | 'coingecko'; // Removed 'finnhub'
                     interval: string;
                 }> = data.prices.map((entry: [number, number]) => ({
                     symbol: coinId,

@@ -36,12 +36,16 @@ const SERVICE_STARTUP_TIMEOUT = 10000; // 10 seconds timeout for service startup
 // Type definitions for API responses
 interface QuoteResponse {
     symbol: string;
+    shortName?: string;
+    longName?: string;
     regularMarketPrice?: number;
     regularMarketTime?: number;
     previousClose?: number;
     marketCap?: number;
     currency?: string;
-    [key: string]: any;
+    logo_url?: string;
+    website?: string;
+    [key: string]: any; // Allow other fields from ticker.info
 }
 
 interface HistoricalDataResult {
@@ -484,7 +488,7 @@ export const yfDataService = {
                                 symbol: string;
                                 price: number;
                                 timestamp: Date;
-                                source: 'finnhub' | 'yahoo';
+                                source: 'yahoo'; // Removed 'finnhub'
                                 interval: string;
                             }> = [];
                             
@@ -540,19 +544,6 @@ export const yfDataService = {
                 CACHE_SETTINGS.QUOTE_MAX_AGE_MINUTES
             );
             
-            if (cachedData) {
-                console.debug(`Using cached quote for ${normalizedSymbol} from database (age: ${CACHE_SETTINGS.QUOTE_MAX_AGE_MINUTES}m)`);
-                
-                // Simulate a quote response with basic price data
-                return {
-                    symbol: normalizedSymbol,
-                    regularMarketPrice: cachedData.price,
-                    regularMarketTime: new Date(cachedData.timestamp).getTime() / 1000,
-                    previousClose: cachedData.price, // Approximation when not available
-                    cached: true
-                };
-            }
-            
             // Create a request key for in-memory cache
             const requestKey = `quote:${normalizedSymbol}`;
             const pendingRequest = pendingRequests.get(requestKey);
@@ -562,13 +553,21 @@ export const yfDataService = {
                 return pendingRequest as Promise<QuoteResponse>;
             }
             
-            // No cache hit, create a new request
+            // Create a new request and store it in the pending requests map
             const requestPromise = (async () => {
                 try {
                     // Fetch from Python service
                     const quoteData = await YfData.getInstance().makeServiceRequest<QuoteResponse>('/quote', {
                         symbol: normalizedSymbol
                     });
+                    
+                    // If we have cached price data, use it to update the regularMarketPrice
+                    // This ensures we're not making unnecessary API calls for price data
+                    if (cachedData && quoteData) {
+                        console.debug(`Using cached price for ${normalizedSymbol} from database (age: ${CACHE_SETTINGS.QUOTE_MAX_AGE_MINUTES}m)`);
+                        quoteData.regularMarketPrice = cachedData.price;
+                        quoteData.regularMarketTime = new Date(cachedData.timestamp).getTime() / 1000;
+                    }
                     
                     // Store in database cache if we got a valid response
                     if (quoteData.regularMarketPrice) {

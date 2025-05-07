@@ -20,6 +20,44 @@ export function formatCurrency(value: number): string {
 }
 
 /**
+ * Format a large number in a human-readable way with appropriate suffix (K, M, B, T)
+ * For example, 1234567 becomes $1.23 million
+ */
+export function formatLargeNumber(value: number): string {
+    // Handle NaN, undefined, or null values
+    if (value === undefined || value === null || isNaN(value)) {
+        return '$0.00';
+    }
+    
+    // Define thresholds and corresponding suffixes
+    const thresholds = [
+        { value: 1e12, suffix: ' trillion' },
+        { value: 1e9, suffix: ' billion' },
+        { value: 1e6, suffix: ' million' },
+        { value: 1e3, suffix: ' thousand' },
+        { value: 1, suffix: '' }
+    ];
+    
+    // Find the appropriate threshold
+    const threshold = thresholds.find(t => value >= t.value);
+    
+    if (!threshold) {
+        return formatCurrency(value); // Fallback to regular formatting
+    }
+    
+    // Format the number with 1 decimal place for values over 1000
+    const formattedValue = value / threshold.value;
+    const decimalPlaces = threshold.value === 1 ? 2 : 1;
+    
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: decimalPlaces,
+        maximumFractionDigits: decimalPlaces
+    }).format(formattedValue) + threshold.suffix;
+}
+
+/**
  * Format a percentage
  */
 export function formatPercent(percent: number): string {

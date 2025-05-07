@@ -7,7 +7,6 @@ services:
     environment:
       - COINGECKO_API_KEY=${COINGECKO_API_KEY}
       - DISCORD_TOKEN=${DISCORD_TOKEN}
-      - FINNHUB_API_KEY=${FINNHUB_API_KEY}
       - YF_PYTHON_SERVICE_URL=http://localhost:3001
       - TZ=UTC
     volumes:
