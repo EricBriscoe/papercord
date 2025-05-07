@@ -366,8 +366,16 @@ export function calculateTimeToExpiry(expirationDate: Date): number {
     return diffMs / (1000 * 60 * 60 * 24); // Return days
 }
 
+// In-memory volatility cache to avoid recalculating frequently
+interface VolatilityCache {
+    volatility: number;
+    timestamp: number;
+    lookbackDays: number;
+}
+const volatilityCache: Map<string, VolatilityCache> = new Map();
+
 /**
- * Get historical volatility for a symbol using actual historical price data
+ * Get historical volatility for a symbol using actual historical price data with caching
  * @param symbol Stock ticker symbol
  * @param lookbackDays Number of trading days to look back for calculation (default: 30)
  * @returns Annualized volatility as a decimal (e.g., 0.30 = 30%)
@@ -382,6 +390,19 @@ export async function getHistoricalVolatility(
         const { priceCacheDb } = await import('../database/operations');
         
         const normalizedSymbol = symbol.toUpperCase();
+        
+        // Create a cache key that includes the lookback period
+        const cacheKey = `${normalizedSymbol}:${lookbackDays}`;
+        
+        // Check in-memory volatility cache first
+        const cachedVolatility = volatilityCache.get(cacheKey);
+        const cacheMaxAgeHours = 24; // Cache volatility for 24 hours
+        const cacheMaxAgeMs = cacheMaxAgeHours * 60 * 60 * 1000;
+        
+        if (cachedVolatility && (Date.now() - cachedVolatility.timestamp) < cacheMaxAgeMs) {
+            console.debug(`Using cached volatility for ${normalizedSymbol}: ${(cachedVolatility.volatility * 100).toFixed(2)}%`);
+            return cachedVolatility.volatility;
+        }
         
         // Calculate interval and duration in minutes
         const intervalMinutes = 1440; // Daily data (24 * 60)
@@ -409,11 +430,11 @@ export async function getHistoricalVolatility(
         
         // Check if we have enough data points already in cache
         if (priceData && priceData.length >= minRequiredDataPoints) {
-            console.log(`Using cached ${priceData.length} historical prices for volatility calculation of ${normalizedSymbol}`);
+            console.debug(`Using cached ${priceData.length} historical prices for volatility calculation of ${normalizedSymbol}`);
             closePrices = priceData.map(entry => entry.price);
         } else {
             // If we don't have enough data in cache, fetch from API
-            console.log(`Fetching historical data for volatility calculation of ${normalizedSymbol} (found ${priceData.length || 0} cached points, need ${minRequiredDataPoints})`);
+            console.debug(`Fetching historical data for volatility calculation of ${normalizedSymbol} (found ${priceData.length || 0} cached points, need ${minRequiredDataPoints})`);
             
             const periodMinutes = lookbackDays <= 30 ? 43200 :  // ~30 days
                                 lookbackDays <= 90 ? 129600 : // ~90 days
@@ -478,29 +499,58 @@ export async function getHistoricalVolatility(
         const annualizedVol = stdDev * Math.sqrt(252);
         
         // Cap volatility at reasonable bounds
-        if (annualizedVol < 0.05) return 0.05;  // Minimum 5%
-        if (annualizedVol > 2.0) return 2.0;    // Maximum 200%
+        let finalVolatility = annualizedVol;
+        if (finalVolatility < 0.05) finalVolatility = 0.05;  // Minimum 5%
+        if (finalVolatility > 2.0) finalVolatility = 2.0;    // Maximum 200%
         
-        console.log(`Calculated volatility for ${normalizedSymbol}: ${(annualizedVol * 100).toFixed(2)}%`);
-        return annualizedVol;
+        // Store in volatility cache
+        volatilityCache.set(cacheKey, {
+            volatility: finalVolatility,
+            timestamp: Date.now(),
+            lookbackDays
+        });
+        
+        console.debug(`Calculated volatility for ${normalizedSymbol}: ${(finalVolatility * 100).toFixed(2)}%`);
+        return finalVolatility;
     } catch (error) {
         console.error(`Error calculating volatility for ${symbol}:`, error);
         return DEFAULT_VOLATILITY.DEFAULT;
     }
 }
 
+// In-memory dividend yield cache
+interface DividendYieldCache {
+    yield: number;
+    timestamp: number;
+}
+const dividendYieldCache: Map<string, DividendYieldCache> = new Map();
+
 /**
- * Get the annualized dividend yield for a symbol
+ * Get the annualized dividend yield for a symbol with caching
  * @param symbol Stock ticker symbol
  * @returns Promise resolving to the annualized dividend yield as a decimal (e.g., 0.03 = 3%)
  */
 export async function getDividendYield(symbol: string): Promise<number> {
     try {
+        const normalizedSymbol = symbol.toUpperCase();
+        
+        // Check in-memory dividend yield cache first
+        const cachedYield = dividendYieldCache.get(normalizedSymbol);
+        const cacheMaxAgeDays = 7; // Cache dividend yield for 7 days since it rarely changes
+        const cacheMaxAgeMs = cacheMaxAgeDays * 24 * 60 * 60 * 1000;
+        
+        if (cachedYield && (Date.now() - cachedYield.timestamp) < cacheMaxAgeMs) {
+            console.debug(`Using cached dividend yield for ${normalizedSymbol}: ${(cachedYield.yield * 100).toFixed(2)}%`);
+            return cachedYield.yield;
+        }
+        
         // Import the yfDataService dynamically to avoid circular dependencies
         const { yfDataService } = await import('../services/yfDataService');
         
         // Get dividend data from Yahoo Finance
         const dividendData = await yfDataService.getDividendData(symbol);
+        
+        let finalYield = 0;
         
         // If we have dividend info and it includes yield, use it
         if (dividendData?.info?.dividendYield) {
@@ -512,64 +562,65 @@ export async function getDividendYield(symbol: string): Promise<number> {
             
             // If the yield is > 1, it's likely a percentage and needs conversion
             if (rawYield > 1) {
-                console.debug(`Converting dividend yield for ${symbol} from percentage (${rawYield}) to decimal (${rawYield / 100})`);
-                return rawYield / 100;
+                console.debug(`Converting dividend yield for ${normalizedSymbol} from percentage (${rawYield}) to decimal (${rawYield / 100})`);
+                finalYield = rawYield / 100;
+            } else {
+                finalYield = rawYield;
             }
             
             // Validate the yield is in a reasonable range (0-20%)
-            if (rawYield > 0.2) {
-                console.warn(`Unusually high dividend yield detected for ${symbol}: ${rawYield * 100}%, capping at 20%`);
-                return 0.2; // Cap at 20% which is already extremely high for a dividend yield
+            if (finalYield > 0.2) {
+                console.warn(`Unusually high dividend yield detected for ${normalizedSymbol}: ${finalYield * 100}%, capping at 20%`);
+                finalYield = 0.2; // Cap at 20% which is already extremely high for a dividend yield
             }
-            
-            return rawYield;
         }
-        
         // If we have dividend history but no explicit yield, calculate it
-        if (dividendData?.history && dividendData.history.length > 0) {
+        else if (dividendData?.history && dividendData.history.length > 0) {
             // Get the current stock quote
-            const quote = await yfDataService.getQuote(symbol);
+            const quote = await yfDataService.getQuote(normalizedSymbol);
             const currentPrice = quote.regularMarketPrice || 0;
             
-            if (currentPrice <= 0) {
-                return 0; // Can't calculate yield without a valid price
-            }
-            
-            // For a simple calculation, find the sum of dividends in the past year
-            const oneYearAgo = new Date();
-            oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-            
-            let annualDividend = 0;
-            
-            // Look for the most recent 4 quarterly dividends or 12 monthly dividends
-            const recentDividends = dividendData.history
-                .filter(d => new Date(d.date) >= oneYearAgo)
-                .slice(0, 4); // Most stocks pay quarterly, so use up to 4 payments
+            if (currentPrice > 0) {
+                // For a simple calculation, find the sum of dividends in the past year
+                const oneYearAgo = new Date();
+                oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
                 
-            if (recentDividends.length > 0) {
-                // Sum up the dividends
-                annualDividend = recentDividends.reduce((sum, div) => sum + div.amount, 0);
+                let annualDividend = 0;
                 
-                // If we have fewer than 4 dividends (e.g., 1-3), extrapolate to a full year
-                if (recentDividends.length < 4) {
-                    annualDividend = annualDividend * (4 / recentDividends.length);
+                // Look for the most recent 4 quarterly dividends or 12 monthly dividends
+                const recentDividends = dividendData.history
+                    .filter(d => new Date(d.date) >= oneYearAgo)
+                    .slice(0, 4); // Most stocks pay quarterly, so use up to 4 payments
+                    
+                if (recentDividends.length > 0) {
+                    // Sum up the dividends
+                    annualDividend = recentDividends.reduce((sum, div) => sum + div.amount, 0);
+                    
+                    // If we have fewer than 4 dividends (e.g., 1-3), extrapolate to a full year
+                    if (recentDividends.length < 4) {
+                        annualDividend = annualDividend * (4 / recentDividends.length);
+                    }
+                    
+                    // Calculate yield
+                    finalYield = annualDividend / currentPrice;
+                    
+                    // Validate the calculated yield is reasonable
+                    if (finalYield > 0.2) {
+                        console.warn(`Calculated dividend yield for ${normalizedSymbol} is unusually high: ${(finalYield * 100).toFixed(2)}%, capping at 20%`);
+                        finalYield = 0.2;
+                    }
                 }
-                
-                // Calculate yield
-                const calculatedYield = annualDividend / currentPrice;
-                
-                // Validate the calculated yield is reasonable
-                if (calculatedYield > 0.2) {
-                    console.warn(`Calculated dividend yield for ${symbol} is unusually high: ${(calculatedYield * 100).toFixed(2)}%, capping at 20%`);
-                    return 0.2;
-                }
-                
-                return calculatedYield;
             }
         }
         
-        // Default to 0 (no dividends) if we can't determine the yield
-        return 0;
+        // Store in dividend yield cache
+        dividendYieldCache.set(normalizedSymbol, {
+            yield: finalYield,
+            timestamp: Date.now()
+        });
+        
+        console.debug(`Calculated dividend yield for ${normalizedSymbol}: ${(finalYield * 100).toFixed(2)}%`);
+        return finalYield;
     } catch (error) {
         console.error(`Failed to get dividend yield for ${symbol}:`, error);
         return 0; // Default to no dividends

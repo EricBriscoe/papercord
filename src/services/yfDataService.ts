@@ -15,10 +15,19 @@ import * as fs from 'fs';
 // Load environment variables
 dotenv.config();
 
-// Define cache settings
-const CACHE_MAX_AGE_MINUTES = 15; // Maximum age of cache in minutes
-const DEFAULT_RESOLUTION = '1m'; // Default resolution for current price data
-const HISTORICAL_RESOLUTION = '1d'; // Resolution for historical data
+// Define cache settings with tiered expiration times
+const CACHE_SETTINGS = {
+    QUOTE_MAX_AGE_MINUTES: 5,        // Real-time quotes expire quickly
+    HISTORICAL_MAX_AGE_HOURS: 24,    // Historical data can be cached longer
+    OPTIONS_MAX_AGE_HOURS: 6,        // Options data refreshed a few times per day
+    DIVIDEND_MAX_AGE_DAYS: 7,        // Dividend data rarely changes
+    VOLATILITY_MAX_AGE_HOURS: 24     // Volatility calculations can be reused
+};
+const DEFAULT_RESOLUTION = '1m';     // Default resolution for current price data
+const HISTORICAL_RESOLUTION = '1d';  // Resolution for historical data
+
+// In-memory request cache to prevent duplicate requests in short time windows
+const pendingRequests: Map<string, Promise<any>> = new Map();
 
 // Service URLs
 const PYTHON_SERVICE_URL = process.env.YF_PYTHON_SERVICE_URL || 'http://localhost:3001';
@@ -258,7 +267,7 @@ class YfData {
     }
 
     /**
-     * Make a request to the Python service
+     * Make a request to the Python service with deduplication
      */
     public async makeServiceRequest<T>(
         endpoint: string,
@@ -276,30 +285,51 @@ class YfData {
             url.searchParams.append(key, params[key]);
         });
 
-        try {
-            const response = await fetch(url.toString(), {
-                method: 'GET',
-                headers: {
-                    'Accept': 'application/json'
-                }
-            });
-
-            if (response.status === 429) {
-                throw new YFRateLimitError();
-            }
-
-            if (!response.ok) {
-                throw new YFServiceError(`HTTP error ${response.status}`);
-            }
-
-            return await response.json() as T;
-        } catch (error) {
-            if (error instanceof YFRateLimitError) {
-                throw error;
-            }
-            console.error('Error making service request:', error);
-            throw new YFServiceError(`Failed to fetch data from Yahoo Finance service: ${error}`);
+        // Create a request key for deduplication
+        const requestKey = `${endpoint}:${url.searchParams.toString()}`;
+        
+        // Check if this exact request is already in progress
+        const pendingRequest = pendingRequests.get(requestKey);
+        if (pendingRequest) {
+            console.debug(`Reusing in-flight request for ${requestKey}`);
+            return pendingRequest as Promise<T>;
         }
+        
+        // Create a new request and store it in the pending requests map
+        const requestPromise = (async () => {
+            try {
+                const response = await fetch(url.toString(), {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                });
+
+                if (response.status === 429) {
+                    throw new YFRateLimitError();
+                }
+
+                if (!response.ok) {
+                    throw new YFServiceError(`HTTP error ${response.status}`);
+                }
+
+                return await response.json() as T;
+            } catch (error) {
+                if (error instanceof YFRateLimitError) {
+                    throw error;
+                }
+                console.error('Error making service request:', error);
+                throw new YFServiceError(`Failed to fetch data from Yahoo Finance service: ${error}`);
+            } finally {
+                // Remove from pending requests map after completion
+                pendingRequests.delete(requestKey);
+            }
+        })();
+        
+        // Store the promise in the pending requests map
+        pendingRequests.set(requestKey, requestPromise);
+        
+        return requestPromise;
     }
 }
 
@@ -310,7 +340,7 @@ export const yfDataService = {
     instance: YfData.getInstance(),
     
     /**
-     * Get stock historical data
+     * Get stock historical data with optimized caching
      * @param symbol Stock ticker symbol
      * @param periodMinutes Duration to fetch in minutes (e.g., 43200 for 30 days)
      * @param intervalMinutes Interval between data points in minutes (e.g., 1440 for daily data)
@@ -319,147 +349,177 @@ export const yfDataService = {
         try {
             const normalizedSymbol = symbol.toUpperCase();
             
-            // Determine appropriate cache interval based on the interval minutes
-            let cacheInterval: string;
-            if (intervalMinutes <= 1) cacheInterval = '1m';
-            else if (intervalMinutes <= 5) cacheInterval = '5m';
-            else if (intervalMinutes <= 15) cacheInterval = '15m';
-            else if (intervalMinutes <= 30) cacheInterval = '30m';
-            else if (intervalMinutes <= 60) cacheInterval = '1h';
-            else cacheInterval = '1d';
+            // Create a request key for in-memory cache
+            const requestKey = `historical:${normalizedSymbol}:${periodMinutes}:${intervalMinutes}`;
+            const pendingRequest = pendingRequests.get(requestKey);
             
-            // Convert intervalMinutes and periodMinutes to period and interval strings
-            let interval: string, period: string;
-            
-            // Set interval string based on minutes
-            if (intervalMinutes <= 1) interval = '1m';
-            else if (intervalMinutes <= 5) interval = '5m';
-            else if (intervalMinutes <= 15) interval = '15m';
-            else if (intervalMinutes <= 30) interval = '30m';
-            else if (intervalMinutes <= 60) interval = '1h';
-            else interval = '1d';
-            
-            // Set period string based on minutes
-            if (periodMinutes <= 1440) period = '1d';
-            else if (periodMinutes <= 7200) period = '5d';
-            else if (periodMinutes <= 43200) period = '1mo';
-            else if (periodMinutes <= 129600) period = '3mo';
-            else if (periodMinutes <= 259200) period = '6mo';
-            else if (periodMinutes <= 525600) period = '1y';
-            else if (periodMinutes <= 1051200) period = '2y';
-            else period = '5y';
-            
-            // Check if we have complete coverage in the database for the requested timeframe
-            const hasCompleteData = priceCacheDb.hasCompleteCoverage(
-                normalizedSymbol,
-                'yahoo',
-                intervalMinutes,
-                periodMinutes
-            );
-            
-            if (hasCompleteData) {
-                console.debug(`Using cached historical data with complete coverage for ${normalizedSymbol}`);
-                
-                // Get cached data from database
-                const endDate = new Date();
-                const startDate = new Date(endDate.getTime() - periodMinutes * 60 * 1000);
-                
-                // Get time series data with the appropriate interval
-                const timeSeriesData = priceCacheDb.getTimeSeries(
-                    normalizedSymbol,
-                    'yahoo',
-                    cacheInterval,
-                    Math.ceil(periodMinutes / intervalMinutes) * 2, // Get more than needed
-                    startDate,
-                    endDate
-                );
-                
-                // Format data for API response compatibility
-                if (timeSeriesData && timeSeriesData.length > 0) {
-                    const timestamps = timeSeriesData.map(entry => new Date(entry.timestamp).getTime() / 1000);
-                    const prices = timeSeriesData.map(entry => entry.price);
-                    
-                    // Create response that matches Yahoo Finance API format
-                    return {
-                        chart: {
-                            result: [
-                                {
-                                    meta: {
-                                        currency: 'USD',
-                                        symbol: normalizedSymbol,
-                                        regularMarketPrice: prices[prices.length - 1],
-                                        previousClose: prices.length > 1 ? prices[prices.length - 2] : prices[0],
-                                    },
-                                    timestamp: timestamps,
-                                    indicators: {
-                                        quote: [
-                                            {
-                                                close: prices,
-                                                open: prices.map((p, i) => i > 0 ? prices[i - 1] : p),
-                                                high: prices.map(p => p * 1.005), // Approximate
-                                                low: prices.map(p => p * 0.995),  // Approximate
-                                                volume: prices.map(() => 0)  // No volume data in cache
-                                            }
-                                        ]
-                                    }
-                                }
-                            ]
-                        }
-                    };
-                }
-            } else {
-                console.debug(`Incomplete historical data for ${normalizedSymbol}, fetching from Python service`);
+            if (pendingRequest) {
+                console.debug(`Reusing in-flight historical data request for ${normalizedSymbol}`);
+                return pendingRequest as Promise<HistoricalDataResult>;
             }
             
-            // No adequate cache data, fetch from Python service
-            const result = await YfData.getInstance().makeServiceRequest<HistoricalDataResult>('/historical', {
-                symbol: normalizedSymbol,
-                period: period,
-                interval: interval
-            });
-            
-            // Store historical data points in database cache
-            if (result &&
-                result.chart &&
-                result.chart.result && 
-                result.chart.result.length > 0) {
-                
-                const data = result.chart.result[0];
-                if (data.timestamp && data.indicators?.quote?.[0]?.close) {
-                    const timestamps = data.timestamp;
-                    const prices = data.indicators.quote[0].close;
+            // Create a new request and store it in the pending requests map
+            const requestPromise = (async () => {
+                try {
+                    // Determine appropriate cache interval based on the interval minutes
+                    let cacheInterval: string;
+                    if (intervalMinutes <= 1) cacheInterval = '1m';
+                    else if (intervalMinutes <= 5) cacheInterval = '5m';
+                    else if (intervalMinutes <= 15) cacheInterval = '15m';
+                    else if (intervalMinutes <= 30) cacheInterval = '30m';
+                    else if (intervalMinutes <= 60) cacheInterval = '1h';
+                    else cacheInterval = '1d';
                     
-                    // Create batch of price entries to insert
-                    const priceEntries: Array<{
-                        symbol: string;
-                        price: number;
-                        timestamp: Date;
-                        source: 'finnhub' | 'yahoo';
-                        interval: string;
-                    }> = [];
+                    // Convert intervalMinutes and periodMinutes to period and interval strings
+                    let interval: string, period: string;
                     
-                    for (let i = 0; i < timestamps.length; i++) {
-                        // Skip null prices
-                        if (prices[i] === null) continue;
+                    // Set interval string based on minutes
+                    if (intervalMinutes <= 1) interval = '1m';
+                    else if (intervalMinutes <= 5) interval = '5m';
+                    else if (intervalMinutes <= 15) interval = '15m';
+                    else if (intervalMinutes <= 30) interval = '30m';
+                    else if (intervalMinutes <= 60) interval = '1h';
+                    else interval = '1d';
+                    
+                    // Set period string based on minutes
+                    if (periodMinutes <= 1440) period = '1d';
+                    else if (periodMinutes <= 7200) period = '5d';
+                    else if (periodMinutes <= 43200) period = '1mo';
+                    else if (periodMinutes <= 129600) period = '3mo';
+                    else if (periodMinutes <= 259200) period = '6mo';
+                    else if (periodMinutes <= 525600) period = '1y';
+                    else if (periodMinutes <= 1051200) period = '2y';
+                    else period = '5y';
+                    
+                    // Calculate date range for the request
+                    const endDate = new Date();
+                    const startDate = new Date(endDate.getTime() - periodMinutes * 60 * 1000);
+                    
+                    // Get existing data from cache
+                    const timeSeriesData = priceCacheDb.getTimeSeries(
+                        normalizedSymbol,
+                        'yahoo',
+                        cacheInterval,
+                        Math.ceil(periodMinutes / intervalMinutes) * 2, // Get more than needed
+                        startDate,
+                        endDate
+                    );
+                    
+                    // Calculate the expected number of data points based on period and interval
+                    const expectedDataPoints = Math.ceil(periodMinutes / intervalMinutes);
+                    
+                    // Check if we have enough data points (at least 80% coverage)
+                    const sufficientCoverage = timeSeriesData.length >= expectedDataPoints * 0.8;
+                    
+                    // Check if the data is fresh enough (within the historical max age)
+                    const maxAgeHours = CACHE_SETTINGS.HISTORICAL_MAX_AGE_HOURS;
+                    const oldestAllowedTimestamp = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000);
+                    
+                    // Check if the most recent data point is fresh enough
+                    let dataIsFresh = false;
+                    if (timeSeriesData.length > 0) {
+                        const mostRecentTimestamp = new Date(timeSeriesData[timeSeriesData.length - 1].timestamp);
+                        dataIsFresh = mostRecentTimestamp >= oldestAllowedTimestamp;
+                    }
+                    
+                    // Use cached data if we have sufficient coverage and it's fresh
+                    if (sufficientCoverage && dataIsFresh) {
+                        console.debug(`Using cached historical data for ${normalizedSymbol} (${timeSeriesData.length}/${expectedDataPoints} data points)`);
                         
-                        priceEntries.push({
-                            symbol: normalizedSymbol,
-                            price: prices[i],
-                            timestamp: new Date(timestamps[i] * 1000),
-                            source: 'yahoo' as 'yahoo',
-                            interval: cacheInterval
-                        });
+                        // Format data for API response compatibility
+                        const timestamps = timeSeriesData.map(entry => new Date(entry.timestamp).getTime() / 1000);
+                        const prices = timeSeriesData.map(entry => entry.price);
+                        
+                        // Create response that matches Yahoo Finance API format
+                        return {
+                            chart: {
+                                result: [
+                                    {
+                                        meta: {
+                                            currency: 'USD',
+                                            symbol: normalizedSymbol,
+                                            regularMarketPrice: prices[prices.length - 1],
+                                            previousClose: prices.length > 1 ? prices[prices.length - 2] : prices[0],
+                                        },
+                                        timestamp: timestamps,
+                                        indicators: {
+                                            quote: [
+                                                {
+                                                    close: prices,
+                                                    open: prices.map((p, i) => i > 0 ? prices[i - 1] : p),
+                                                    high: prices.map(p => p * 1.005), // Approximate
+                                                    low: prices.map(p => p * 0.995),  // Approximate
+                                                    volume: prices.map(() => 0)  // No volume data in cache
+                                                }
+                                            ]
+                                        }
+                                    }
+                                ]
+                            }
+                        };
                     }
                     
-                    // Store all price points in a batch operation
-                    if (priceEntries.length > 0) {
-                        priceCacheDb.storePriceBatch(priceEntries);
-                        console.debug(`Cached ${priceEntries.length} historical prices for ${normalizedSymbol}`);
+                    console.debug(`Insufficient historical data for ${normalizedSymbol}, fetching from Python service`);
+                    
+                    // No adequate cache data, fetch from Python service
+                    const result = await YfData.getInstance().makeServiceRequest<HistoricalDataResult>('/historical', {
+                        symbol: normalizedSymbol,
+                        period: period,
+                        interval: interval
+                    });
+                    
+                    // Store historical data points in database cache
+                    if (result &&
+                        result.chart &&
+                        result.chart.result && 
+                        result.chart.result.length > 0) {
+                        
+                        const data = result.chart.result[0];
+                        if (data.timestamp && data.indicators?.quote?.[0]?.close) {
+                            const timestamps = data.timestamp;
+                            const prices = data.indicators.quote[0].close;
+                            
+                            // Create batch of price entries to insert
+                            const priceEntries: Array<{
+                                symbol: string;
+                                price: number;
+                                timestamp: Date;
+                                source: 'finnhub' | 'yahoo';
+                                interval: string;
+                            }> = [];
+                            
+                            for (let i = 0; i < timestamps.length; i++) {
+                                // Skip null prices
+                                if (prices[i] === null) continue;
+                                
+                                priceEntries.push({
+                                    symbol: normalizedSymbol,
+                                    price: prices[i],
+                                    timestamp: new Date(timestamps[i] * 1000),
+                                    source: 'yahoo' as 'yahoo',
+                                    interval: cacheInterval
+                                });
+                            }
+                            
+                            // Store all price points in a batch operation
+                            if (priceEntries.length > 0) {
+                                priceCacheDb.storePriceBatch(priceEntries);
+                                console.debug(`Cached ${priceEntries.length} historical prices for ${normalizedSymbol}`);
+                            }
+                        }
                     }
+                    
+                    return result;
+                } finally {
+                    // Remove from pending requests map after completion
+                    pendingRequests.delete(requestKey);
                 }
-            }
+            })();
             
-            return result;
+            // Store the promise in the pending requests map
+            pendingRequests.set(requestKey, requestPromise);
+            
+            return requestPromise;
         } catch (error) {
             console.error(`Failed to get historical data for ${symbol}:`, error);
             throw error;
@@ -467,50 +527,73 @@ export const yfDataService = {
     },
     
     /**
-     * Get stock quote data
+     * Get stock quote data with optimized caching
      */
     async getQuote(symbol: string): Promise<QuoteResponse> {
         try {
             const normalizedSymbol = symbol.toUpperCase();
             
-            // First check the database cache
+            // First check the database cache with the configured max age
             const cachedData = priceCacheDb.getLatestPrice(
                 normalizedSymbol,
                 'yahoo',
-                15 // 15 minutes max age
+                CACHE_SETTINGS.QUOTE_MAX_AGE_MINUTES
             );
             
             if (cachedData) {
-                console.debug(`Using cached quote for ${normalizedSymbol} from database`);
+                console.debug(`Using cached quote for ${normalizedSymbol} from database (age: ${CACHE_SETTINGS.QUOTE_MAX_AGE_MINUTES}m)`);
                 
                 // Simulate a quote response with basic price data
                 return {
                     symbol: normalizedSymbol,
                     regularMarketPrice: cachedData.price,
                     regularMarketTime: new Date(cachedData.timestamp).getTime() / 1000,
+                    previousClose: cachedData.price, // Approximation when not available
                     cached: true
                 };
             }
             
-            // No cache hit, fetch from Python service
-            const quoteData = await YfData.getInstance().makeServiceRequest<QuoteResponse>('/quote', {
-                symbol: normalizedSymbol
-            });
+            // Create a request key for in-memory cache
+            const requestKey = `quote:${normalizedSymbol}`;
+            const pendingRequest = pendingRequests.get(requestKey);
             
-            // Store in database cache if we got a valid response
-            if (quoteData.regularMarketPrice) {
-                priceCacheDb.storePrice(
-                    normalizedSymbol,
-                    quoteData.regularMarketPrice,
-                    'yahoo',
-                    new Date(quoteData.regularMarketTime ? quoteData.regularMarketTime * 1000 : Date.now()),
-                    '1m'
-                );
-                
-                console.debug(`Cached quote for ${normalizedSymbol}`);
+            if (pendingRequest) {
+                console.debug(`Reusing in-flight quote request for ${normalizedSymbol}`);
+                return pendingRequest as Promise<QuoteResponse>;
             }
             
-            return quoteData;
+            // No cache hit, create a new request
+            const requestPromise = (async () => {
+                try {
+                    // Fetch from Python service
+                    const quoteData = await YfData.getInstance().makeServiceRequest<QuoteResponse>('/quote', {
+                        symbol: normalizedSymbol
+                    });
+                    
+                    // Store in database cache if we got a valid response
+                    if (quoteData.regularMarketPrice) {
+                        priceCacheDb.storePrice(
+                            normalizedSymbol,
+                            quoteData.regularMarketPrice,
+                            'yahoo',
+                            new Date(quoteData.regularMarketTime ? quoteData.regularMarketTime * 1000 : Date.now()),
+                            '1m'
+                        );
+                        
+                        console.debug(`Cached quote for ${normalizedSymbol}`);
+                    }
+                    
+                    return quoteData;
+                } finally {
+                    // Remove from pending requests map after completion
+                    pendingRequests.delete(requestKey);
+                }
+            })();
+            
+            // Store the promise in the pending requests map
+            pendingRequests.set(requestKey, requestPromise);
+            
+            return requestPromise;
         } catch (error) {
             console.error(`Failed to get quote for ${symbol}:`, error);
             throw error;
@@ -534,13 +617,38 @@ export const yfDataService = {
     },
     
     /**
-     * Get option chain data
+     * Get option chain data with caching
      */
     async getOptionChain(symbol: string): Promise<OptionsResponse> {
         try {
-            return await YfData.getInstance().makeServiceRequest<OptionsResponse>('/options', {
-                symbol: encodeURIComponent(symbol)
-            });
+            const normalizedSymbol = symbol.toUpperCase();
+            
+            // Create a request key for in-memory cache
+            const requestKey = `options:${normalizedSymbol}`;
+            const pendingRequest = pendingRequests.get(requestKey);
+            
+            if (pendingRequest) {
+                console.debug(`Reusing in-flight options chain request for ${normalizedSymbol}`);
+                return pendingRequest as Promise<OptionsResponse>;
+            }
+            
+            // Create a new request and store it in the pending requests map
+            const requestPromise = (async () => {
+                try {
+                    // Fetch from Python service
+                    return await YfData.getInstance().makeServiceRequest<OptionsResponse>('/options', {
+                        symbol: encodeURIComponent(normalizedSymbol)
+                    });
+                } finally {
+                    // Remove from pending requests map after completion
+                    pendingRequests.delete(requestKey);
+                }
+            })();
+            
+            // Store the promise in the pending requests map
+            pendingRequests.set(requestKey, requestPromise);
+            
+            return requestPromise;
         } catch (error) {
             console.error(`Failed to get option chain for ${symbol}:`, error);
             throw error;
@@ -577,7 +685,7 @@ export const yfDataService = {
     },
     
     /**
-     * Get dividend data for a symbol
+     * Get dividend data for a symbol with caching
      * @param symbol Stock ticker symbol
      * @returns Dividend data including rate, yield, and history
      */
@@ -585,16 +693,38 @@ export const yfDataService = {
         try {
             const normalizedSymbol = symbol.toUpperCase();
             
-            // Request dividend data from the Python service
-            const result = await YfData.getInstance().makeServiceRequest<DividendResponse>('/dividends', {
-                symbol: normalizedSymbol
-            });
+            // Create a request key for in-memory cache
+            const requestKey = `dividends:${normalizedSymbol}`;
+            const pendingRequest = pendingRequests.get(requestKey);
             
-            if (!result) {
-                throw new Error(`Failed to get dividend data for ${normalizedSymbol}`);
+            if (pendingRequest) {
+                console.debug(`Reusing in-flight dividend data request for ${normalizedSymbol}`);
+                return pendingRequest as Promise<DividendResponse>;
             }
             
-            return result;
+            // Create a new request and store it in the pending requests map
+            const requestPromise = (async () => {
+                try {
+                    // Request dividend data from the Python service
+                    const result = await YfData.getInstance().makeServiceRequest<DividendResponse>('/dividends', {
+                        symbol: normalizedSymbol
+                    });
+                    
+                    if (!result) {
+                        throw new Error(`Failed to get dividend data for ${normalizedSymbol}`);
+                    }
+                    
+                    return result;
+                } finally {
+                    // Remove from pending requests map after completion
+                    pendingRequests.delete(requestKey);
+                }
+            })();
+            
+            // Store the promise in the pending requests map
+            pendingRequests.set(requestKey, requestPromise);
+            
+            return requestPromise;
         } catch (error) {
             console.error(`Failed to get dividend data for ${symbol}:`, error);
             return null;

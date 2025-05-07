@@ -57,7 +57,8 @@ RUN python3 -m venv /app/venv
 ENV PATH="/app/venv/bin:$PATH"
 
 # Install Python packages for the YF service
-RUN pip install --no-cache-dir yfinance flask
+COPY src/python_services/requirements.txt ./src/python_services/
+RUN pip install --no-cache-dir -r ./src/python_services/requirements.txt
 
 # Create data directory for SQLite database
 RUN mkdir -p /app/data/cache/charts && \

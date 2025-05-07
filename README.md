@@ -128,6 +128,19 @@ Or use Docker Compose (see the `docker-compose.yml` file in the repository).
 - Build: `npm run build`
 - Build Docker image: `docker build -t papercord .`
 
+## Yahoo Finance API Optimization
+
+To prevent rate limiting and ensure reliable data access, PaperCord implements several optimizations:
+
+- **Multi-level Caching**: Tiered caching system with different TTLs for different data types
+- **Rate Limiting**: Automatic request throttling to stay within API limits
+- **Request Batching**: Process multiple symbols in a single request
+- **Database Caching**: Persistent storage of historical price data
+- **Request Deduplication**: Prevents duplicate API calls for the same data
+- **Exponential Backoff**: Smart retry logic for failed requests
+
+For more details, see the [Yahoo Finance Service Optimization](src/python_services/README.md) documentation.
+
 ## Tech Stack
 
 - TypeScript
@@ -137,6 +150,7 @@ Or use Docker Compose (see the `docker-compose.yml` file in the repository).
 - Python / yfinance (for Yahoo Finance data)
 - Flask (Python web framework)
 - Docker
+- cachetools (for TTL caching)
 
 ## License
 
