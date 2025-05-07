@@ -11,16 +11,12 @@ import os
 import json
 import logging
 import time
-import threading
 import functools
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Callable, TypeVar, Tuple
 from flask import Flask, request, jsonify
 import yfinance as yf
-from cachetools import TTLCache, cached
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from cachetools import TTLCache # `cached` decorator not used in this file.
 
 # Configure logging
 logging.basicConfig(
@@ -47,65 +43,11 @@ options_cache = TTLCache(maxsize=500, ttl=CACHE_SETTINGS['OPTIONS'])
 dividends_cache = TTLCache(maxsize=500, ttl=CACHE_SETTINGS['DIVIDENDS'])
 search_cache = TTLCache(maxsize=1000, ttl=CACHE_SETTINGS['SEARCH'])
 
-# Rate limiting settings
-MAX_REQUESTS_PER_MINUTE = 100
-REQUEST_WINDOW_SECONDS = 60
-request_timestamps = []
-request_lock = threading.Lock()
-
 # Batch processing settings
 BATCH_SIZE = 10  # Maximum number of symbols to process in a single batch
-batch_queue = {}
-batch_results = {}
-batch_lock = threading.Lock()
-
-# Configure requests with retry logic
-def create_session():
-    """Create a requests session with retry logic"""
-    session = requests.Session()
-    retry = Retry(
-        total=3,
-        backoff_factor=0.5,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"]
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    return session
-
-# Create a session for yfinance to use
-yf_session = create_session()
-yf.set_tz_session_object(yf_session)
 
 # Type variable for generic function
 T = TypeVar('T')
-
-def rate_limited(func: Callable[..., T]) -> Callable[..., T]:
-    """Decorator to apply rate limiting to a function"""
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        with request_lock:
-            current_time = time.time()
-            # Remove timestamps older than the window
-            global request_timestamps
-            request_timestamps = [ts for ts in request_timestamps 
-                                if current_time - ts < REQUEST_WINDOW_SECONDS]
-            
-            # Check if we've hit the rate limit
-            if len(request_timestamps) >= MAX_REQUESTS_PER_MINUTE:
-                oldest = min(request_timestamps)
-                sleep_time = REQUEST_WINDOW_SECONDS - (current_time - oldest)
-                if sleep_time > 0:
-                    logger.warning(f"Rate limit reached, sleeping for {sleep_time:.2f} seconds")
-                    time.sleep(sleep_time)
-            
-            # Add current timestamp
-            request_timestamps.append(time.time())
-        
-        # Call the original function
-        return func(*args, **kwargs)
-    return wrapper
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -120,28 +62,9 @@ def get_ticker_quote(symbol: str) -> Dict[str, Any]:
         logger.debug(f"Cache hit for quote:{symbol}")
         return quote_cache[cache_key]
     
-    # Apply rate limiting
-    with request_lock:
-        current_time = time.time()
-        # Remove timestamps older than the window
-        global request_timestamps
-        request_timestamps = [ts for ts in request_timestamps 
-                            if current_time - ts < REQUEST_WINDOW_SECONDS]
-        
-        # Check if we've hit the rate limit
-        if len(request_timestamps) >= MAX_REQUESTS_PER_MINUTE:
-            oldest = min(request_timestamps)
-            sleep_time = REQUEST_WINDOW_SECONDS - (current_time - oldest)
-            if sleep_time > 0:
-                logger.warning(f"Rate limit reached, sleeping for {sleep_time:.2f} seconds")
-                time.sleep(sleep_time)
-        
-        # Add current timestamp
-        request_timestamps.append(time.time())
-    
-    # Fetch from Yahoo Finance
+    # Fetch from Yahoo Finance (using yfinance defaults)
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = yf.Ticker(symbol) # Removed session=yf_session
         quote_data = ticker.info
         
         # Format the response
@@ -157,7 +80,7 @@ def get_ticker_quote(symbol: str) -> Dict[str, Any]:
         # Cache the result
         quote_cache[cache_key] = result
         return result
-    except Exception as e:
+    except Exception as e: 
         logger.error(f"Error fetching quote for {symbol}: {e}")
         raise
 
@@ -203,28 +126,9 @@ def get_ticker_historical(symbol: str, period: str, interval: str) -> Dict[str, 
         logger.debug(f"Cache hit for {cache_key}")
         return historical_cache[cache_key]
     
-    # Apply rate limiting
-    with request_lock:
-        current_time = time.time()
-        # Remove timestamps older than the window
-        global request_timestamps
-        request_timestamps = [ts for ts in request_timestamps 
-                            if current_time - ts < REQUEST_WINDOW_SECONDS]
-        
-        # Check if we've hit the rate limit
-        if len(request_timestamps) >= MAX_REQUESTS_PER_MINUTE:
-            oldest = min(request_timestamps)
-            sleep_time = REQUEST_WINDOW_SECONDS - (current_time - oldest)
-            if sleep_time > 0:
-                logger.warning(f"Rate limit reached, sleeping for {sleep_time:.2f} seconds")
-                time.sleep(sleep_time)
-        
-        # Add current timestamp
-        request_timestamps.append(time.time())
-    
-    # Fetch from Yahoo Finance
+    # Fetch from Yahoo Finance (using yfinance defaults)
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = yf.Ticker(symbol) # Removed session=yf_session
         hist = ticker.history(period=period, interval=interval)
         
         # Format the response to match the expected structure
@@ -234,7 +138,7 @@ def get_ticker_historical(symbol: str, period: str, interval: str) -> Dict[str, 
             "chart": {
                 "result": [{
                     "meta": {
-                        "currency": ticker.info.get("currency", "USD"),
+                        "currency": ticker.info.get("currency", "USD"), # This might fail if ticker.info itself fails
                         "symbol": symbol,
                         "regularMarketPrice": ticker.info.get("regularMarketPrice"),
                         "previousClose": ticker.info.get("previousClose")
@@ -304,34 +208,18 @@ def search_for_symbols(query: str) -> List[Dict[str, Any]]:
         logger.debug(f"Cache hit for {cache_key}")
         return search_cache[cache_key]
     
-    # Apply rate limiting
-    with request_lock:
-        current_time = time.time()
-        # Remove timestamps older than the window
-        global request_timestamps
-        request_timestamps = [ts for ts in request_timestamps 
-                            if current_time - ts < REQUEST_WINDOW_SECONDS]
-        
-        # Check if we've hit the rate limit
-        if len(request_timestamps) >= MAX_REQUESTS_PER_MINUTE:
-            oldest = min(request_timestamps)
-            sleep_time = REQUEST_WINDOW_SECONDS - (current_time - oldest)
-            if sleep_time > 0:
-                logger.warning(f"Rate limit reached, sleeping for {sleep_time:.2f} seconds")
-                time.sleep(sleep_time)
-        
-        # Add current timestamp
-        request_timestamps.append(time.time())
-    
-    # Fetch from Yahoo Finance
+    # Fetch from Yahoo Finance (using yfinance defaults)
     try:
-        tickers = yf.Tickers(query)
+        # yf.Tickers does not accept a session argument directly.
+        # It internally creates yf.Ticker objects.
+        tickers = yf.Tickers(query) 
         results = []
         
         # For each ticker that was successfully fetched, add to results
-        for symbol, ticker in tickers.tickers.items():
+        for symbol, ticker_obj in tickers.tickers.items(): # Renamed to ticker_obj to avoid conflict
             try:
-                info = ticker.info
+                # Accessing .info here will use yfinance's default session handling for this Ticker object
+                info = ticker_obj.info 
                 if info and 'shortName' in info:
                     results.append({
                         "symbol": symbol,
@@ -340,9 +228,9 @@ def search_for_symbols(query: str) -> List[Dict[str, Any]]:
                         "exchange": info.get('exchange'),
                         "quoteType": info.get('quoteType')
                     })
-            except:
-                # Skip tickers that cause errors
-                pass
+            except Exception as e_inner: # Catch error for individual ticker info fetch
+                logger.warning(f"Could not fetch info for ticker {symbol} in search query '{query}': {e_inner}")
+                pass # Skip tickers that cause errors
         
         # Cache the result
         search_cache[cache_key] = results
@@ -374,28 +262,9 @@ def get_ticker_options(symbol: str, expiration: Optional[str] = None) -> Dict[st
         logger.debug(f"Cache hit for {cache_key}")
         return options_cache[cache_key]
     
-    # Apply rate limiting
-    with request_lock:
-        current_time = time.time()
-        # Remove timestamps older than the window
-        global request_timestamps
-        request_timestamps = [ts for ts in request_timestamps 
-                            if current_time - ts < REQUEST_WINDOW_SECONDS]
-        
-        # Check if we've hit the rate limit
-        if len(request_timestamps) >= MAX_REQUESTS_PER_MINUTE:
-            oldest = min(request_timestamps)
-            sleep_time = REQUEST_WINDOW_SECONDS - (current_time - oldest)
-            if sleep_time > 0:
-                logger.warning(f"Rate limit reached, sleeping for {sleep_time:.2f} seconds")
-                time.sleep(sleep_time)
-        
-        # Add current timestamp
-        request_timestamps.append(time.time())
-    
-    # Fetch from Yahoo Finance
+    # Fetch from Yahoo Finance (using yfinance defaults)
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = yf.Ticker(symbol) # Removed session=yf_session
         
         # Get option expiration dates
         expirations = ticker.options
@@ -456,28 +325,9 @@ def get_ticker_dividends(symbol: str, period: str = '5y') -> Dict[str, Any]:
         logger.debug(f"Cache hit for {cache_key}")
         return dividends_cache[cache_key]
     
-    # Apply rate limiting
-    with request_lock:
-        current_time = time.time()
-        # Remove timestamps older than the window
-        global request_timestamps
-        request_timestamps = [ts for ts in request_timestamps 
-                            if current_time - ts < REQUEST_WINDOW_SECONDS]
-        
-        # Check if we've hit the rate limit
-        if len(request_timestamps) >= MAX_REQUESTS_PER_MINUTE:
-            oldest = min(request_timestamps)
-            sleep_time = REQUEST_WINDOW_SECONDS - (current_time - oldest)
-            if sleep_time > 0:
-                logger.warning(f"Rate limit reached, sleeping for {sleep_time:.2f} seconds")
-                time.sleep(sleep_time)
-        
-        # Add current timestamp
-        request_timestamps.append(time.time())
-    
-    # Fetch from Yahoo Finance
+    # Fetch from Yahoo Finance (using yfinance defaults)
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = yf.Ticker(symbol) # Removed session=yf_session
         dividends = ticker.dividends
         
         # Get basic dividend info from the ticker info
@@ -557,4 +407,6 @@ def get_dividends():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3001))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    # Set debug=False for production readiness within this script, 
+    # though actual production deployment should use a WSGI server like Gunicorn.
+    app.run(host='0.0.0.0', port=port, debug=False)
