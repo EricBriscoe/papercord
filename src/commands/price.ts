@@ -315,7 +315,7 @@ if (companyInfo.marketCap) {
         
         // Dividend Yield
         if (typeof companyInfo.dividendYield === 'number') {
-            fieldsToAdd.push({ name: 'Dividend Yield', value: `${(companyInfo.dividendYield * 100).toFixed(2)}%`, inline: true });
+            fieldsToAdd.push({ name: 'Dividend Yield', value: `${companyInfo.dividendYield.toFixed(2)}%`, inline: true });
         }
         
         // Currency
