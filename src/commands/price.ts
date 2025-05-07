@@ -40,9 +40,27 @@ export const priceCommand: Command = {
         try {
             console.log(`Fetching stock data for symbol: ${symbol}`);
             
+            // Clear cache for this symbol to ensure we get fresh data
+            console.log(`Clearing cache for ${symbol} to ensure fresh data`);
+            stockService.clearCache(symbol);
+            
             // Fetch stock data and company info
             const stockData = await stockService.getStockPrice(symbol);
             const companyInfo = await stockService.getCompanyInfo(symbol);
+            
+            // Debug: Log the companyInfo object to see what fields are available
+            console.log(`[DEBUG] companyInfo for ${symbol}:`, JSON.stringify({
+                symbol: companyInfo?.symbol,
+                name: companyInfo?.name,
+                dayLow: companyInfo?.dayLow,
+                dayHigh: companyInfo?.dayHigh,
+                fiftyTwoWeekLow: companyInfo?.fiftyTwoWeekLow,
+                fiftyTwoWeekHigh: companyInfo?.fiftyTwoWeekHigh,
+                marketCap: companyInfo?.marketCap,
+                volume: companyInfo?.volume,
+                dividendYield: companyInfo?.dividendYield,
+                currency: companyInfo?.currency
+            }, null, 2));
             
             if (!stockData.price) {
                 await interaction.editReply(`Could not find price for ${symbol}. ${stockData.error || 'Please check the symbol and try again.'}`);
@@ -53,7 +71,7 @@ export const priceCommand: Command = {
             const currentPrice = stockData.price;
             
             // Create the initial embed for stock info (without chart yet)
-            const initialEmbed = createStockEmbed(symbol, currentPrice, companyInfo);
+            const initialEmbed = await createStockEmbed(symbol, currentPrice, companyInfo);
             initialEmbed.setFooter({ text: 'Generating price history chart...' });
             
             // Create buttons for time frames - but add a loading notice
@@ -80,7 +98,7 @@ export const priceCommand: Command = {
                         console.log(`Chart generated for ${symbol} in ${Date.now() - commandStartTime}ms`);
                         
                         // Create updated embed with the same info
-                        const updatedEmbed = createStockEmbed(symbol, currentPrice, companyInfo);
+                        const updatedEmbed = await createStockEmbed(symbol, currentPrice, companyInfo);
                         
                         // Create the proper buttons now that chart is ready
                         const buttonRows = createTimeFrameButtons(defaultTimeFrame);
@@ -123,7 +141,7 @@ export const priceCommand: Command = {
                                 const selectedTimeFrame = buttonInteraction.customId.split(':')[1] as TimeFrame;
                                 
                                 // Update footer to indicate loading state
-                                const loadingEmbed = createStockEmbed(symbol, currentPrice, companyInfo);
+                                const loadingEmbed = await createStockEmbed(symbol, currentPrice, companyInfo);
                                 loadingEmbed.setImage(`attachment://${symbol.toLowerCase()}-chart.png`);
                                 loadingEmbed.setFooter({ text: `Generating ${timeFrameLabels[selectedTimeFrame]} chart...` });
                                 
@@ -147,7 +165,7 @@ export const priceCommand: Command = {
                                 }
                                 
                                 // Create updated embed and buttons
-                                const updatedEmbed = createStockEmbed(symbol, currentPrice, companyInfo);
+                                const updatedEmbed = await createStockEmbed(symbol, currentPrice, companyInfo);
                                 const updatedButtonRows = createTimeFrameButtons(selectedTimeFrame);
                                 
                                 // Create new attachment
@@ -187,7 +205,7 @@ export const priceCommand: Command = {
                         // When collector expires, remove buttons
                         collector.on('end', async () => {
                             try {
-                                const finalEmbed = createStockEmbed(symbol, currentPrice, companyInfo);
+                                const finalEmbed = await createStockEmbed(symbol, currentPrice, companyInfo);
                                 finalEmbed.setImage(`attachment://${symbol.toLowerCase()}-chart.png`);
                                 
                                 // Edit the reply to remove buttons
@@ -231,12 +249,95 @@ export const priceCommand: Command = {
 /**
  * Create an embed for stock information
  */
-function createStockEmbed(symbol: string, price: number, companyInfo: any): EmbedBuilder {
+async function createStockEmbed(symbol: string, price: number, companyInfo: any): Promise<EmbedBuilder> {
+    const displayName = companyInfo?.longName || companyInfo?.shortName || symbol.toUpperCase();
+    const title = displayName === symbol.toUpperCase() 
+        ? `${displayName} Price` 
+        : `${symbol.toUpperCase()} - ${displayName} Price`;
+
     const embed = new EmbedBuilder()
-        .setTitle(`${symbol.toUpperCase()} - ${companyInfo?.name || 'Stock'} Price`)
-        .setDescription(`Current price: ${formatCurrency(price)}`)
+        .setTitle(title)
         .setColor('#0099ff')
         .setTimestamp();
+
+    // Main description with current price
+    embed.setDescription(`**Current Price: ${formatCurrency(price)}**`);
+
+    // Add fields for more company info
+    if (companyInfo) {
+        const fieldsToAdd: { name: string; value: string; inline?: boolean }[] = [];
+
+        // Debug: Log the specific fields we're checking
+        console.log(`[DEBUG] createStockEmbed for ${symbol} - Field checks:`, JSON.stringify({
+            hasDayRange: !!(companyInfo.dayLow && companyInfo.dayHigh),
+            dayLow: companyInfo.dayLow,
+            dayHigh: companyInfo.dayHigh,
+            has52WeekRange: !!(companyInfo.fiftyTwoWeekLow && companyInfo.fiftyTwoWeekHigh),
+            fiftyTwoWeekLow: companyInfo.fiftyTwoWeekLow,
+            fiftyTwoWeekHigh: companyInfo.fiftyTwoWeekHigh,
+            hasMarketCap: !!companyInfo.marketCap,
+            marketCap: companyInfo.marketCap,
+            hasVolume: !!companyInfo.volume,
+            volume: companyInfo.volume,
+            hasDividendYield: typeof companyInfo.dividendYield === 'number',
+            dividendYield: companyInfo.dividendYield,
+            currency: companyInfo.currency
+        }, null, 2));
+
+        // Try using different property names that might be in the data
+        // Day's Range
+        if (companyInfo.dayLow && companyInfo.dayHigh) {
+            fieldsToAdd.push({ name: "Day's Range", value: `${formatCurrency(companyInfo.dayLow)} - ${formatCurrency(companyInfo.dayHigh)}`, inline: true });
+        } else if (companyInfo.regularMarketDayLow && companyInfo.regularMarketDayHigh) {
+            fieldsToAdd.push({ name: "Day's Range", value: `${formatCurrency(companyInfo.regularMarketDayLow)} - ${formatCurrency(companyInfo.regularMarketDayHigh)}`, inline: true });
+        }
+        
+        // 52 Week Range
+        if (companyInfo.fiftyTwoWeekLow && companyInfo.fiftyTwoWeekHigh) {
+            fieldsToAdd.push({ name: '52 Week Range', value: `${formatCurrency(companyInfo.fiftyTwoWeekLow)} - ${formatCurrency(companyInfo.fiftyTwoWeekHigh)}`, inline: true });
+        }
+        
+// Market Cap
+if (companyInfo.marketCap) {
+    const { formatLargeNumber } = await import('../utils/formatters');
+    const marketCapDisplay = companyInfo.currency && companyInfo.currency !== 'USD'
+        ? `${formatLargeNumber(companyInfo.marketCap)} ${companyInfo.currency}`
+        : formatLargeNumber(companyInfo.marketCap);
+    fieldsToAdd.push({ name: 'Market Cap', value: marketCapDisplay, inline: true });
+}
+        
+        // Volume
+        if (companyInfo.volume) {
+            fieldsToAdd.push({ name: 'Volume', value: companyInfo.volume.toLocaleString(), inline: true });
+        } else if (companyInfo.regularMarketVolume) {
+            fieldsToAdd.push({ name: 'Volume', value: companyInfo.regularMarketVolume.toLocaleString(), inline: true });
+        }
+        
+        // Dividend Yield
+        if (typeof companyInfo.dividendYield === 'number') {
+            fieldsToAdd.push({ name: 'Dividend Yield', value: `${(companyInfo.dividendYield * 100).toFixed(2)}%`, inline: true });
+        }
+        
+        // Currency
+        if (companyInfo.currency && companyInfo.currency !== 'USD') {
+            fieldsToAdd.push({ name: 'Currency', value: companyInfo.currency, inline: true });
+        }
+
+        // Ensure an even number of inline fields for alignment if we want a strict 2-column layout for inline fields.
+        // Count only inline fields for this logic.
+        const inlineFieldsCount = fieldsToAdd.filter(f => f.inline).length;
+        if (inlineFieldsCount % 2 !== 0) {
+            fieldsToAdd.push({ name: '\u200B', value: '\u200B', inline: true }); // Add a blank inline field
+        }
+        
+        // Debug: Log the fields we're adding
+        console.log(`[DEBUG] createStockEmbed for ${symbol} - Adding ${fieldsToAdd.length} fields:`, 
+            fieldsToAdd.map(f => f.name).join(', '));
+        
+        if (fieldsToAdd.length > 0) {
+            embed.addFields(fieldsToAdd); // Add all collected fields at once
+        }
+    }
     
     // Add company logo if available
     if (companyInfo?.logo) {
@@ -247,7 +348,7 @@ function createStockEmbed(symbol: string, price: number, companyInfo: any): Embe
     // Add company website if available
     if (companyInfo?.weburl) {
         const encodedWebUrl = encodeUrlWithPlus(companyInfo.weburl);
-        embed.setURL(encodedWebUrl);
+        embed.setURL(encodedWebUrl); // Sets the title as a hyperlink
     }
     
     return embed;

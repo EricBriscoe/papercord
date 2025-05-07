@@ -64,18 +64,30 @@ def get_ticker_quote(symbol: str) -> Dict[str, Any]:
     
     # Fetch from Yahoo Finance (using yfinance defaults)
     try:
-        ticker = yf.Ticker(symbol) # Removed session=yf_session
+        ticker = yf.Ticker(symbol)
         quote_data = ticker.info
         
-        # Format the response
-        result = {
-            "symbol": symbol,
-            "regularMarketPrice": quote_data.get("regularMarketPrice"),
-            "regularMarketTime": quote_data.get("regularMarketTime"),
-            "previousClose": quote_data.get("previousClose"),
-            "marketCap": quote_data.get("marketCap"),
-            "currency": quote_data.get("currency")
-        }
+        # Create a result dictionary and populate it with all keys from quote_data
+        # This ensures all available information is passed through.
+        # We also explicitly add the 'symbol' key as it's fundamental.
+        result = {"symbol": symbol}
+        if quote_data: # Ensure quote_data is not None
+            for key, value in quote_data.items():
+                # yfinance might return Timestamp objects or other non-JSON serializable types
+                if isinstance(value, (datetime, timedelta)):
+                    result[key] = value.isoformat()
+                elif isinstance(value, (int, float, str, bool, list, dict)) or value is None:
+                    result[key] = value
+                else:
+                    # For other types, convert to string or skip
+                    try:
+                        json.dumps({key: value}) # Test serializability
+                        result[key] = value
+                    except (TypeError, OverflowError):
+                        logger.warning(f"Skipping non-serializable key '{key}' for symbol {symbol} with value type {type(value)}")
+                        result[key] = str(value) # Fallback to string representation
+
+        logger.info(f"Quote data for {symbol}: {json.dumps(result, indent=2)}")
         
         # Cache the result
         quote_cache[cache_key] = result
