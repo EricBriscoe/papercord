@@ -288,8 +288,7 @@ export const tradeOptionCommand: Command = {
 
                         // Delete the original reply (removes the message with buttons)
                         await interaction.deleteReply();
-                        // Send an ephemeral follow-up with the trade summary
-                        await interaction.followUp({ embeds: [resultEmbed], ephemeral: true });
+                        await interaction.followUp({ embeds: [resultEmbed] });
                         confirmCollector.stop();
                         collector.stop();
                     }
