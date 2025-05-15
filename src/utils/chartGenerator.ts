@@ -50,7 +50,7 @@ export const timeFrameLabels: Record<TimeFrame, string> = {
     [TimeFrame.THREE_MONTHS]: '3 Months',
     [TimeFrame.SIX_MONTHS]: '6 Months',
     [TimeFrame.YEAR]: '1 Year',
-    [TimeFrame.MAX]: 'Max (5Y)'
+    [TimeFrame.MAX]: 'Max'
 };
 
 // Dark mode theme colors
