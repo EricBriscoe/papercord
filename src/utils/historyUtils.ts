@@ -1,6 +1,7 @@
 import { userDb, transactionDb, optionsDb, cryptoTransactionDb, priceCacheDb } from '../database/operations';
 import { timeFrameDays } from './chartGenerator';
 import { optionsService } from '../services/optionsService';
+import { coinGeckoService } from '../services/coinGeckoService';
 
 export async function generateEquitySeries(
   userId: string,
@@ -140,6 +141,16 @@ export async function generateAssetSeries(
   const stocks: number[] = [];
   const crypto: number[] = [];
   const options: number[] = [];
+const cryptoIds = [...new Set(cryptoTx.map(x => x.coinId))];
+const priceHistory: Record<string, Record<string, number>> = {};
+for (const id of cryptoIds) {
+  const { prices } = await coinGeckoService.getHistoricalPrices(id, days);
+  priceHistory[id] = {};
+  for (const [ts, p] of prices) {
+    const date = new Date(ts).toISOString().split('T')[0];
+    priceHistory[id][date] = p;
+  }
+}
   for (let i = 0; i <= days; i++) {
     const current = new Date(start);
     current.setDate(start.getDate() + i);
@@ -181,14 +192,13 @@ export async function generateAssetSeries(
     }
     stocks.push(mvStock);
     let mvCrypto = 0;
-    const coins = [...new Set(cryptoTx.map(x => x.coinId))];
-    for (const c of coins) {
-      const qty = cryptoTx.filter(x => new Date(x.timestamp!) <= current && x.coinId === c)
+    for (const id of cryptoIds) {
+      const qty = cryptoTx
+        .filter(x => new Date(x.timestamp!) <= current && x.coinId === id)
         .reduce((sum, x) => sum + (x.type === 'buy' ? x.quantity : -x.quantity), 0);
       if (qty > 0) {
-        const prices = priceCacheDb.getTimeSeries(c, 'coingecko', '1d', days + 1, start, new Date());
-        const rec = prices.find(p => p.timestamp.startsWith(dateStr));
-        mvCrypto += (rec?.price || 0) * qty;
+        const p = priceHistory[id][dateStr] || 0;
+        mvCrypto += p * qty;
       }
     }
     crypto.push(mvCrypto);
