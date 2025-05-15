@@ -10,7 +10,7 @@ import {
   ButtonInteraction
 } from 'discord.js';
 import { Command } from '../models/command';
-import { generateEquitySeries } from '../utils/historyUtils';
+import { generateAssetSeries } from '../utils/historyUtils';
 import { TimeFrame, timeFrameLabels } from '../utils/chartGenerator';
 import { ChartJSNodeCanvas } from 'chartjs-node-canvas';
 import * as fs from 'fs';
@@ -67,25 +67,37 @@ export const historyCommand: Command = {
     };
 
     const render = async (frame: TimeFrame) => {
-      const { dates, equity } = await generateEquitySeries(targetId, frame, 'all');
+      const { dates, cash, stocks, crypto, options } = await generateAssetSeries(targetId, frame);
       if (!fs.existsSync(CHART_DIR)) fs.mkdirSync(CHART_DIR, { recursive: true });
       const ts = Date.now();
-      const name = `equity-${targetId}-${frame}-${ts}.png`;
+      const name = `portfolio-${targetId}-${frame}-${ts}.png`;
       const full = path.join(CHART_DIR, name);
       const canvas = new ChartJSNodeCanvas({ width: 900, height: 500 });
       const cfg: import('chart.js').ChartConfiguration = {
         type: 'line',
-        data: { labels: dates, datasets: [{ label: 'Equity', data: equity, borderColor: '#0099ff', backgroundColor: '#0099ff30', fill: true, tension: 0.3 }] },
+        data: {
+          labels: dates,
+          datasets: [
+            { label: 'Stocks', data: stocks, borderColor: '#0099ff', backgroundColor: '#0099ff30', fill: true, tension: 0.3 },
+            { label: 'Options', data: options, borderColor: '#f6cd61', backgroundColor: '#f6cd6130', fill: true, tension: 0.3 },
+            { label: 'Crypto', data: crypto, borderColor: '#f97794', backgroundColor: '#f9779430', fill: true, tension: 0.3 },
+            { label: 'Cash', data: cash, borderColor: '#4ecca3', backgroundColor: '#4ecca330', fill: true, tension: 0.3 }
+          ]
+        },
         options: {
           plugins: {
-            title: { display: true, text: `${username}'s Equity (${timeFrameLabels[frame]}) ${formatCurrency(equity[equity.length-1] - equity[0])}` }
+            legend: { display: true },
+            title: { display: true, text: `${username}'s Portfolio (${timeFrameLabels[frame]})` }
           },
-          scales: { x: { ticks: { maxTicksLimit: 5 } }, y: {} }
+          scales: {
+            x: { ticks: { maxTicksLimit: 5 } },
+            y: { stacked: true, min: 0 }
+          }
         }
       };
       const buf = await canvas.renderToBuffer(cfg);
       fs.writeFileSync(full, buf);
-      const embed = new EmbedBuilder().setTitle(`Equity Curve – ${username}`).setImage(`attachment://${name}`);
+      const embed = new EmbedBuilder().setTitle(`Portfolio Breakdown – ${username}`).setImage(`attachment://${name}`);
       const attachment = new AttachmentBuilder(full, { name });
       const comps = createButtons(frame);
       await interaction.editReply({ embeds: [embed], files: [attachment], components: comps });
@@ -97,26 +109,37 @@ export const historyCommand: Command = {
     const collector = (reply as any).createMessageComponentCollector({ componentType: ComponentType.Button, time: BUTTON_TIMEOUT });
     collector.on('collect', async (btn: ButtonInteraction) => {
       const f = btn.customId.split(':')[1] as TimeFrame;
-      // generate updated chart and embed
-      const { dates, equity } = await generateEquitySeries(targetId, f, 'all');
+      const { dates, cash, stocks, crypto, options } = await generateAssetSeries(targetId, f);
       if (!fs.existsSync(CHART_DIR)) fs.mkdirSync(CHART_DIR, { recursive: true });
       const ts2 = Date.now();
-      const name2 = `equity-${targetId}-${f}-${ts2}.png`;
+      const name2 = `portfolio-${targetId}-${f}-${ts2}.png`;
       const full2 = path.join(CHART_DIR, name2);
       const canvas2 = new ChartJSNodeCanvas({ width: 900, height: 500 });
       const cfg2: import('chart.js').ChartConfiguration = {
         type: 'line',
-        data: { labels: dates, datasets: [{ label: 'Equity', data: equity, borderColor: '#0099ff', backgroundColor: '#0099ff30', fill: true, tension: 0.3 }] },
+        data: {
+          labels: dates,
+          datasets: [
+            { label: 'Stocks', data: stocks, borderColor: '#0099ff', backgroundColor: '#0099ff30', fill: true, tension: 0.3 },
+            { label: 'Options', data: options, borderColor: '#f6cd61', backgroundColor: '#f6cd6130', fill: true, tension: 0.3 },
+            { label: 'Crypto', data: crypto, borderColor: '#f97794', backgroundColor: '#f9779430', fill: true, tension: 0.3 },
+            { label: 'Cash', data: cash, borderColor: '#4ecca3', backgroundColor: '#4ecca330', fill: true, tension: 0.3 }
+          ]
+        },
         options: {
           plugins: {
-            title: { display: true, text: `${username}'s Equity (${timeFrameLabels[f]}) ${formatCurrency(equity[equity.length-1] - equity[0])}` }
+            legend: { display: true },
+            title: { display: true, text: `${username}'s Portfolio (${timeFrameLabels[f]})` }
           },
-          scales: { x: { ticks: { maxTicksLimit: 5 } }, y: {} }
+          scales: {
+            x: { ticks: { maxTicksLimit: 5 } },
+            y: { stacked: true, min: 0 }
+          }
         }
       };
       const buf2 = await canvas2.renderToBuffer(cfg2);
       fs.writeFileSync(full2, buf2);
-      const embed2 = new EmbedBuilder().setTitle(`Equity Curve – ${username}`).setImage(`attachment://${name2}`);
+      const embed2 = new EmbedBuilder().setTitle(`Portfolio Breakdown – ${username}`).setImage(`attachment://${name2}`);
       const attachment2 = new AttachmentBuilder(full2, { name: name2 });
       const comps2 = createButtons(f);
       await btn.update({ embeds: [embed2], files: [attachment2], components: comps2 });
