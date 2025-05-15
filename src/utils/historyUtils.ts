@@ -1,5 +1,6 @@
 import { userDb, transactionDb, optionsDb, cryptoTransactionDb, priceCacheDb } from '../database/operations';
 import { timeFrameDays } from './chartGenerator';
+import { optionsService } from '../services/optionsService';
 
 export async function generateEquitySeries(
   userId: string,
@@ -111,4 +112,107 @@ export async function generateEquitySeries(
   }
 
   return { dates, equity };
+}
+
+export async function generateAssetSeries(
+  userId: string,
+  timeframe: keyof typeof timeFrameDays
+): Promise<{ dates: string[]; cash: number[]; stocks: number[]; crypto: number[]; options: number[] }> {
+  userDb.getOrCreateUser(userId);
+  const stockTx = transactionDb.getUserTransactions(userId, 100000);
+  const optionTx = optionsDb.getUserTransactions(userId, 100000);
+  const cryptoTx = cryptoTransactionDb.getUserTransactions(userId, 100000);
+  stockTx.sort((a, b) => new Date(a.timestamp!).getTime() - new Date(b.timestamp!).getTime());
+  cryptoTx.sort((a, b) => new Date(a.timestamp!).getTime() - new Date(b.timestamp!).getTime());
+  optionTx.sort((a, b) => new Date(a.timestamp!).getTime() - new Date(b.timestamp!).getTime());
+  let days = timeFrameDays[timeframe];
+  if (timeframe === 'max') {
+    const all = [...stockTx, ...cryptoTx, ...optionTx];
+    if (all.length) {
+      const earliest = all.reduce((m, e) => new Date(e.timestamp!) < m ? new Date(e.timestamp!) : m, new Date(all[0].timestamp!));
+      days = Math.ceil((Date.now() - earliest.getTime()) / (1000 * 60 * 60 * 24));
+    }
+  }
+  const start = new Date();
+  start.setDate(start.getDate() - days);
+  const dates: string[] = [];
+  const cash: number[] = [];
+  const stocks: number[] = [];
+  const crypto: number[] = [];
+  const options: number[] = [];
+  for (let i = 0; i <= days; i++) {
+    const current = new Date(start);
+    current.setDate(start.getDate() + i);
+    const dateStr = current.toISOString().split('T')[0];
+    dates.push(dateStr);
+    let stockFlow = 0, cryptoFlow = 0, optFlow = 0;
+    for (const tx of stockTx) {
+      if (new Date(tx.timestamp!) <= current) {
+        stockFlow += (tx.type === 'buy' ? -1 : 1) * tx.price * tx.quantity;
+      }
+    }
+    for (const tx of cryptoTx) {
+      if (new Date(tx.timestamp!) <= current) {
+        cryptoFlow += (tx.type === 'buy' ? -1 : 1) * tx.price * tx.quantity;
+      }
+    }
+    for (const tx of optionTx) {
+      const t = new Date(tx.timestamp!);
+      if (t <= current) {
+        const amt = tx.price * tx.quantity * 100;
+        if (tx.type === 'open') {
+          optFlow += tx.position === 'long' ? -amt : amt;
+        } else {
+          optFlow += tx.position === 'long' ? amt : -amt;
+        }
+      }
+    }
+    cash.push(100000 + stockFlow + cryptoFlow + optFlow);
+    let mvStock = 0;
+    const syms = [...new Set(stockTx.map(x => x.symbol))];
+    for (const s of syms) {
+      const qty = stockTx.filter(x => new Date(x.timestamp!) <= current && x.symbol === s)
+        .reduce((sum, x) => sum + (x.type === 'buy' ? x.quantity : -x.quantity), 0);
+      if (qty > 0) {
+        const prices = priceCacheDb.getTimeSeries(s, 'yahoo', '1d', days + 1, start, new Date());
+        const rec = prices.find(p => p.timestamp.startsWith(dateStr));
+        mvStock += (rec?.price || 0) * qty;
+      }
+    }
+    stocks.push(mvStock);
+    let mvCrypto = 0;
+    const coins = [...new Set(cryptoTx.map(x => x.coinId))];
+    for (const c of coins) {
+      const qty = cryptoTx.filter(x => new Date(x.timestamp!) <= current && x.coinId === c)
+        .reduce((sum, x) => sum + (x.type === 'buy' ? x.quantity : -x.quantity), 0);
+      if (qty > 0) {
+        const prices = priceCacheDb.getTimeSeries(c, 'coingecko', '1d', days + 1, start, new Date());
+        const rec = prices.find(p => p.timestamp.startsWith(dateStr));
+        mvCrypto += (rec?.price || 0) * qty;
+      }
+    }
+    crypto.push(mvCrypto);
+    // compute options market value instead of cumulative flow
+    let mvOptions = 0;
+    const contractKeys = [...new Set(optionTx.map(tx => `${tx.symbol}|${tx.optionType}|${tx.strikePrice}|${tx.expirationDate}`))];
+    for (const key of contractKeys) {
+      const [sym, type, strikeStr, exp] = key.split('|');
+      let netQty = 0;
+      for (const tx2 of optionTx) {
+        const t2 = new Date(tx2.timestamp!);
+        if (t2 <= current && `${tx2.symbol}|${tx2.optionType}|${tx2.strikePrice}|${tx2.expirationDate}` === key) {
+          if (tx2.type === 'open') netQty += tx2.position === 'long' ? tx2.quantity : -tx2.quantity;
+          else netQty += tx2.position === 'long' ? -tx2.quantity : tx2.quantity;
+        }
+      }
+      if (netQty !== 0) {
+        const { price: perShare } = await optionsService.calculateOptionPrice(
+          sym, type as 'call'|'put', parseFloat(strikeStr), exp
+        );
+        if (perShare) mvOptions += perShare * 100 * Math.abs(netQty);
+      }
+    }
+    options.push(mvOptions);
+  }
+  return { dates, cash, stocks, crypto, options };
 }
