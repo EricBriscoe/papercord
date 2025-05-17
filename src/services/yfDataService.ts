@@ -30,7 +30,7 @@ const HISTORICAL_RESOLUTION = '1d';  // Resolution for historical data
 const pendingRequests: Map<string, Promise<any>> = new Map();
 
 // Service URLs
-const PYTHON_SERVICE_URL = process.env.YF_PYTHON_SERVICE_URL || 'http://localhost:3001';
+const PYTHON_SERVICE_URL = 'http://127.0.0.1:3001';
 const SERVICE_STARTUP_TIMEOUT = 30000; // 30 seconds timeout for service startup
 
 // Type definitions for API responses
