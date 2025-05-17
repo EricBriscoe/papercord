@@ -31,11 +31,10 @@ start_python_service() {
 start_node_app &
 NODE_PID=$!
 
-start_python_service &
-PYTHON_PID=$!
+# Python service startup removed to avoid duplicate binds
 
 # Handle termination signals
-trap "kill $NODE_PID $PYTHON_PID; exit" SIGINT SIGTERM
+trap "kill $NODE_PID; exit" SIGINT SIGTERM
 
 # Wait for both processes
 wait
