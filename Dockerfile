@@ -1,93 +1,43 @@
-FROM node:alpine AS builder
+# syntax=docker/dockerfile:1.4
 
+# Node build stage
+FROM node:18-alpine AS node-builder
 WORKDIR /app
-
-# Install build dependencies for native modules
-RUN apk add --no-cache \
-    python3 \
-    py3-pip \
-    build-base \
-    cairo-dev \
-    jpeg-dev \
-    pango-dev \
-    giflib-dev \
-    pkgconf \
-    ttf-dejavu
-
-# Copy package files and install dependencies with all native modules built
+RUN apk add --no-cache python3 py3-pip build-base pkgconf cairo-dev jpeg-dev pango-dev giflib-dev ttf-dejavu
 COPY package*.json ./
 RUN npm ci
-
-# Copy source code
 COPY tsconfig.json ./
-COPY src/ ./src/
-
-# Build the TypeScript project
+COPY src ./src
 RUN npm run build
-
-# Prune dev dependencies
 RUN npm prune --omit=dev
 
-# Production image
-FROM node:alpine
-
+# Python build stage
+FROM node:18-alpine AS python-builder
 WORKDIR /app
+RUN apk add --no-cache python3 py3-pip bash build-base pkgconf cairo-dev jpeg-dev pango-dev giflib-dev python3-dev ttf-dejavu tzdata
+RUN python3 -m venv /venv
+ENV PATH="/venv/bin:$PATH"
+COPY src/python_services/requirements.txt ./requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip pip install --no-cache-dir -r requirements.txt
 
-# Install Python and required packages, plus runtime dependencies for canvas
-RUN apk add --no-cache \
-    python3 \
-    py3-pip \
-    bash \
-    cairo \
-    jpeg \
-    pango \
-    giflib \
-    tzdata \
-    pkgconf \
-    build-base \
-    cairo-dev \
-    jpeg-dev \
-    pango-dev \
-    giflib-dev \
-    python3-dev \
-    ttf-dejavu
-
-# Create and use a Python virtual environment
-RUN python3 -m venv /app/venv
-ENV PATH="/app/venv/bin:$PATH"
-
-# Install Python packages for the YF service
-COPY src/python_services/requirements.txt ./src/python_services/
-RUN pip install --no-cache-dir -r ./src/python_services/requirements.txt
-
-# Create data directory for SQLite database
-RUN mkdir -p /app/data/cache/charts && \
-    chown -R node:node /app
-
-# Copy package files
-COPY package*.json ./
-
-# Copy node_modules from builder stage
-COPY --from=builder /app/node_modules ./node_modules
-
-# Copy built files from builder stage
-COPY --from=builder /app/dist ./dist
-
-# Copy Python services
-COPY src/python_services/ ./src/python_services/
-
-# Copy scripts directory
-COPY scripts/ ./scripts/
-
-# Ensure scripts are executable
-RUN chmod +x ./scripts/*.sh ./src/python_services/*.sh ./src/python_services/*.py
-
-# Use non-root user for better security
+# Production stage
+FROM node:18-alpine AS production
+WORKDIR /app
+# Runtime dependencies only
+RUN apk add --no-cache python3 bash cairo jpeg pango giflib tzdata ttf-dejavu pkgconf
+# Copy node artifacts
+COPY --from=node-builder /app/node_modules ./node_modules
+COPY --from=node-builder /app/dist ./dist
+# Copy python virtual environment
+COPY --from=python-builder /venv /venv
+ENV PATH="/venv/bin:$PATH"
+# Copy application scripts and services
+COPY scripts ./scripts
+COPY src/python_services ./src/python_services
+RUN chmod +x scripts/*.sh src/python_services/*.sh src/python_services/*.py
+# Create data directory and set permissions
+RUN mkdir -p data/cache/charts && chown -R node:node /app
 USER node
-
-# Set environment variables
 ENV NODE_ENV=production
 ENV YF_PYTHON_SERVICE_URL=http://localhost:3001
-
-# Start services with auto-restart capability
-CMD ["bash", "./scripts/start-services.sh"]
+CMD ["bash", "scripts/start-services.sh"]
