@@ -31,7 +31,7 @@ const pendingRequests: Map<string, Promise<any>> = new Map();
 
 // Service URLs
 const PYTHON_SERVICE_URL = process.env.YF_PYTHON_SERVICE_URL || 'http://localhost:3001';
-const SERVICE_STARTUP_TIMEOUT = 10000; // 10 seconds timeout for service startup
+const SERVICE_STARTUP_TIMEOUT = 30000; // 30 seconds timeout for service startup
 
 // Type definitions for API responses
 interface QuoteResponse {
@@ -162,9 +162,16 @@ class YfData {
         }
 
         // If service is starting, wait for it
-        if (this.serviceStarting && this.serviceStartPromise) {
-            return this.serviceStartPromise;
-        }
+if (this.serviceStarting && this.serviceStartPromise) {
+    return this.serviceStartPromise;
+}
+
+// Prevent multiple service spawns if already started
+if (this.serviceProcess) {
+    console.log('Python service already spawned, skipping start');
+    this.serviceReady = true;
+    return true;
+}
 
         this.serviceStarting = true;
         this.serviceStartPromise = new Promise<boolean>((resolve) => {
