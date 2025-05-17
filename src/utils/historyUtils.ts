@@ -205,6 +205,18 @@ export async function generateAssetSeries(
   const crypto: number[] = [];
   const options: number[] = [];
 
+  // fetch stock history
+  const stockIds = [...new Set(stockTx.map((x) => x.symbol))];
+  const stockPriceHistory: Record<string, Record<string, number>> = {};
+  for (const sym of stockIds) {
+    const hist = await stockService.getHistoricalPrices(sym, days * 24 * 60, 24 * 60);
+    stockPriceHistory[sym] = {};
+    for (const entry of hist) {
+      const dateKey = entry.timestamp.split('T')[0];
+      stockPriceHistory[sym][dateKey] = entry.price;
+    }
+  }
+
   // fetch crypto history
   const cryptoIds = [...new Set(cryptoTx.map((x) => x.coinId))];
   const priceHistory: Record<string, Record<string, number>> = {};
@@ -286,16 +298,15 @@ export async function generateAssetSeries(
         .filter((x) => new Date(x.timestamp!) <= current && x.symbol === s)
         .reduce((sum, x) => sum + (x.type === 'buy' ? x.quantity : -x.quantity), 0);
       if (qty > 0) {
-        const prices = priceCacheDb.getTimeSeries(s, 'yahoo', '1d', days + 1, start, new Date());
-        let rec = prices.find((p) => p.timestamp.startsWith(dateStr));
-        if (!rec && prices.length) {
-          rec = prices.reduce((prev, curr) => {
-            const prevDiff = Math.abs(new Date(prev.timestamp).getTime() - current.getTime());
-            const currDiff = Math.abs(new Date(curr.timestamp).getTime() - current.getTime());
-            return currDiff < prevDiff ? curr : prev;
-          }, prices[0]);
+        // get price from pre-fetched history
+        let price = stockPriceHistory[s]?.[dateStr];
+        if (price === undefined) {
+          const datesArr = Object.keys(stockPriceHistory[s] || {}).sort();
+          const priorDates = datesArr.filter((d) => d <= dateStr);
+          const closestDate = priorDates.length ? priorDates[priorDates.length - 1] : datesArr[0];
+          price = stockPriceHistory[s]?.[closestDate] || 0;
         }
-        mvStock += (rec?.price || 0) * qty;
+        mvStock += price * qty;
       }
     }
     stocks.push(mvStock);
@@ -306,8 +317,17 @@ export async function generateAssetSeries(
       const qty = cryptoTx
         .filter((x) => new Date(x.timestamp!) <= current && x.coinId === id)
         .reduce((sum, x) => sum + (x.type === 'buy' ? x.quantity : -x.quantity), 0);
-      const p = priceHistory[id][dateStr] ?? Object.values(priceHistory[id])[0] ?? 0;
-      mvC += p * qty;
+      if (qty > 0) {
+        // get price from pre-fetched history
+        let p = priceHistory[id]?.[dateStr];
+        if (p === undefined) {
+          const datesArr = Object.keys(priceHistory[id] || {}).sort();
+          const priorDates = datesArr.filter((d) => d <= dateStr);
+          const closestDate = priorDates.length ? priorDates[priorDates.length - 1] : datesArr[0];
+          p = priceHistory[id]?.[closestDate] || 0;
+        }
+        mvC += p * qty;
+      }
     }
     crypto.push(mvC);
 
