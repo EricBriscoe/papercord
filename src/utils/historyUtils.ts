@@ -151,6 +151,16 @@ for (const id of cryptoIds) {
     priceHistory[id][date] = p;
   }
 }
+const finalCash = userDb.getCashBalance(userId);
+const totalStockFlowAll = stockTx.reduce((sum, tx) => sum + ((tx.type === 'buy' ? -1 : 1) * tx.price * tx.quantity), 0);
+const totalCryptoFlowAll = cryptoTx.reduce((sum, tx) => sum + ((tx.type === 'buy' ? -1 : 1) * tx.price * tx.quantity), 0);
+const totalOptFlowAll = optionTx.reduce((sum, tx) => {
+  const amt = tx.price * tx.quantity * 100;
+  return sum + (tx.type === 'open'
+    ? (tx.position === 'long' ? -amt : amt)
+    : (tx.position === 'long' ? amt : -amt));
+}, 0);
+const initialCash = finalCash - (totalStockFlowAll + totalCryptoFlowAll + totalOptFlowAll);
   for (let i = 0; i <= days; i++) {
     const current = new Date(start);
     current.setDate(start.getDate() + i);
@@ -178,7 +188,7 @@ for (const id of cryptoIds) {
         }
       }
     }
-    cash.push(100000 + stockFlow + cryptoFlow + optFlow);
+    cash.push(initialCash + stockFlow + cryptoFlow + optFlow);
     let mvStock = 0;
     const syms = [...new Set(stockTx.map(x => x.symbol))];
     for (const s of syms) {
