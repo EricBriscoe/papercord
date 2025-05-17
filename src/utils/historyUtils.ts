@@ -186,7 +186,14 @@ for (const id of cryptoIds) {
         .reduce((sum, x) => sum + (x.type === 'buy' ? x.quantity : -x.quantity), 0);
       if (qty > 0) {
         const prices = priceCacheDb.getTimeSeries(s, 'yahoo', '1d', days + 1, start, new Date());
-        const rec = prices.find(p => p.timestamp.startsWith(dateStr));
+        let rec = prices.find(p => p.timestamp.startsWith(dateStr));
+        if (!rec && prices.length > 0) {
+          rec = prices.reduce((prev, curr) => {
+            const prevDiff = Math.abs(new Date(prev.timestamp).getTime() - current.getTime());
+            const currDiff = Math.abs(new Date(curr.timestamp).getTime() - current.getTime());
+            return currDiff < prevDiff ? curr : prev;
+          }, prices[0]);
+        }
         mvStock += (rec?.price || 0) * qty;
       }
     }
@@ -197,7 +204,20 @@ for (const id of cryptoIds) {
         .filter(x => new Date(x.timestamp!) <= current && x.coinId === id)
         .reduce((sum, x) => sum + (x.type === 'buy' ? x.quantity : -x.quantity), 0);
       if (qty > 0) {
-        const p = priceHistory[id][dateStr] || 0;
+        let p = priceHistory[id][dateStr];
+        if (p === undefined) {
+          const availableDates = Object.keys(priceHistory[id]);
+          if (availableDates.length > 0) {
+            const nearest = availableDates.reduce((prev, curr) => {
+              const prevDiff = Math.abs(new Date(prev).getTime() - current.getTime());
+              const currDiff = Math.abs(new Date(curr).getTime() - current.getTime());
+              return currDiff < prevDiff ? curr : prev;
+            }, availableDates[0]);
+            p = priceHistory[id][nearest];
+          } else {
+            p = 0;
+          }
+        }
         mvCrypto += p * qty;
       }
     }
